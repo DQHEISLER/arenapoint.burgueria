@@ -4,112 +4,112 @@ import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Arena Point - Sistema de Comandas", layout="wide")
+st.set_page_config(page_title="Arena Point - Gestão Total", layout="wide")
 
-# Conexão com Google Sheets
+# Conexão com Google Sheets (Tirando o cache para não sumir dados)
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- ESTADOS DA SESSÃO ---
+# --- INICIALIZAÇÃO DE ESTADOS ---
 if 'carrinho' not in st.session_state:
     st.session_state.carrinho = []
-if 'numero_comanda' not in st.session_state:
-    # Tenta descobrir o último número de comanda na planilha
-    try:
-        df_temp = conn.read(worksheet="Sheet1")
-        st.session_state.numero_comanda = int(df_temp['Comanda'].max()) + 1
-    except:
-        st.session_state.numero_comanda = 1
 
-# --- CARDÁPIO REAL (BASEADO NA IMAGEM) ---
+# --- FUNÇÃO PARA LER DADOS SEM CACHE ---
+def get_data():
+    try:
+        # worksheet="Sheet1" deve ser o nome exato da aba no Google Sheets
+        return conn.read(worksheet="Sheet1", ttl=0) 
+    except:
+        return pd.DataFrame(columns=["Comanda", "Data", "Item", "Preço"])
+
+# Define o número da próxima comanda
+df_vendas_atual = get_data()
+if not df_vendas_atual.empty:
+    proxima_comanda = int(df_vendas_atual['Comanda'].max()) + 1
+else:
+    proxima_comanda = 1
+
+# --- CARDÁPIO ---
 cardapio = {
-    "HAMBÚRGUER": {
-        "🍔 Simples": 15.00,
-        "🍔 Duplo": 20.00,
-        "🍔 Triplo": 26.00
-    },
-    "ESPETOS": {
-        "🍢 Carne": 8.00,
-        "🍢 Frango": 8.00
-    },
-    "BEBIDAS": {
-        "🥤 Água com Gás": 4.00,
-        "🥤 Refrigerante Lata": 5.00,
-        "🥤 Refrigerante 1 Litro": 8.00,
-        "🥤 Refrigerante 2 Litros": 18.00
-    }
+    "HAMBÚRGUER": {"🍔 Simples": 15.0, "🍔 Duplo": 20.0, "🍔 Triplo": 26.0},
+    "ESPETOS": {"🍢 Carne": 8.0, "🍢 Frango": 8.0},
+    "BEBIDAS": {"🥤 Água": 4.0, "🥤 Lata": 5.0, "🥤 1 Litro": 8.0, "🥤 2 Litros": 18.0}
 }
 
-st.title("🍔 Arena Point - Gestão de Comandas")
+# --- INTERFACE POR ABAS ---
+tab_vendas, tab_relatorios = st.tabs(["🛒 Nova Venda", "📊 Relatórios e Faturamento"])
 
-# --- ÁREA DE VENDAS ---
-col_menu, col_carrinho = st.columns([1, 1])
+with tab_vendas:
+    st.title("🍔 Arena Point - Caixa")
+    col1, col2 = st.columns([1, 1])
 
-with col_menu:
-    st.subheader("Menu")
-    categoria = st.radio("Categoria:", list(cardapio.keys()))
-    item_nome = st.selectbox("Produto:", list(cardapio[categoria].keys()))
-    
-    if st.button("➕ Adicionar ao Pedido", use_container_width=True):
-        st.session_state.carrinho.append({
-            "Comanda": st.session_state.numero_comanda,
-            "Data": datetime.now().strftime("%d/%m/%Y %H:%M"),
-            "Item": item_nome,
-            "Preço": cardapio[categoria][item_nome]
-        })
-        st.toast(f"{item_nome} adicionado!")
-
-with col_carrinho:
-    st.subheader(f"📋 Comanda Atual: #{st.session_state.numero_comanda}")
-    if st.session_state.carrinho:
-        df_c = pd.DataFrame(st.session_state.carrinho)
-        st.dataframe(df_c[["Item", "Preço"]], use_container_width=True)
+    with col1:
+        st.subheader("Menu")
+        cat = st.radio("Categoria", list(cardapio.keys()))
+        prod = st.selectbox("Produto", list(cardapio[cat].keys()))
         
-        total = df_c["Preço"].sum()
-        st.markdown(f"### Total: R$ {total:.2f}")
-        
-        if st.button("✅ Finalizar e Enviar para Nuvem", type="primary", use_container_width=True):
-            try:
-                # 1. Lê banco de dados existente
-                try:
-                    df_antigo = conn.read(worksheet="Sheet1")
-                except:
-                    df_antigo = pd.DataFrame(columns=["Comanda", "Data", "Item", "Preço"])
+        if st.button("➕ Adicionar Item"):
+            st.session_state.carrinho.append({
+                "Comanda": proxima_comanda,
+                "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Item": prod,
+                "Preço": cardapio[cat][prod]
+            })
+            st.toast("Item adicionado!")
+
+    with col2:
+        st.subheader(f"📋 Comanda Atual: #{proxima_comanda}")
+        if st.session_state.carrinho:
+            df_cart = pd.DataFrame(st.session_state.carrinho)
+            st.table(df_cart[["Item", "Preço"]])
+            total_comanda = df_cart["Preço"].sum()
+            st.write(f"### Total Comanda: R$ {total_comanda:.2f}")
+
+            if st.button("✅ Finalizar Pedido", type="primary"):
+                df_antigo = get_data()
+                df_final = pd.concat([df_antigo, df_cart], ignore_index=True)
                 
-                # 2. Concatena (Append)
-                df_novo = pd.DataFrame(st.session_state.carrinho)
-                df_final = pd.concat([df_antigo, df_novo], ignore_index=True)
-                
-                # 3. Salva
+                # Salva na planilha
                 conn.update(worksheet="Sheet1", data=df_final)
                 
-                st.success(f"Pedido #{st.session_state.numero_comanda} salvo!")
+                st.success(f"Pedido #{proxima_comanda} enviado com sucesso!")
                 st.session_state.carrinho = []
-                st.session_state.numero_comanda += 1
                 st.rerun()
-            except Exception as e:
-                st.error("Erro na conexão. Verifique os Secrets e se a aba chama 'Sheet1'.")
 
-st.divider()
+with tab_relatorios:
+    st.title("📊 Controle de Faturamento")
+    df_vendas = get_data()
 
-# --- HISTÓRICO ESTILO IFOOD ---
-st.header("📂 Histórico de Pedidos (Comandas)")
-
-try:
-    df_vendas = conn.read(worksheet="Sheet1")
     if not df_vendas.empty:
-        # Agrupar por comanda para mostrar como o iFood
-        comandas_ids = df_vendas['Comanda'].unique()[::-1] # Do mais novo para o mais antigo
+        # Tratamento de datas para engenharia de dados
+        df_vendas['Data'] = pd.to_datetime(df_vendas['Data'])
+        hoje = datetime.now().date()
+        mes_atual = datetime.now().month
+        ano_atual = datetime.now().year
+
+        # 1. Faturamento Diário
+        vendas_hoje = df_vendas[df_vendas['Data'].dt.date == hoje]
+        fatur_dia = vendas_hoje['Preço'].sum()
+
+        # 2. Faturamento Mensal
+        vendas_mes = df_vendas[(df_vendas['Data'].dt.month == mes_atual) & (df_vendas['Data'].dt.year == ano_atual)]
+        fatur_mes = vendas_mes['Preço'].sum()
+
+        # Exibição de Métricas
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Faturamento Hoje", f"R$ {fatur_dia:.2f}")
+        c2.metric("Faturamento Mensal", f"R$ {fatur_mes:.2f}")
+        c3.metric("Total de Pedidos", len(df_vendas['Comanda'].unique()))
+
+        st.divider()
+        st.subheader("📂 Histórico por Comanda")
         
-        for id_c in comandas_ids:
-            with st.expander(f"📦 Pedido #{id_c}"):
-                pedido_detalhe = df_vendas[df_vendas['Comanda'] == id_c]
-                data_pedido = pedido_detalhe['Data'].iloc[0]
-                total_pedido = pedido_detalhe['Preço'].sum()
-                
-                st.write(f"**Data:** {data_pedido}")
-                st.table(pedido_detalhe[["Item", "Preço"]])
-                st.write(f"**Valor da Comanda:** R$ {total_pedido:.2f}")
+        # Mostra as comandas da mais recente para a mais antiga
+        ids_reversos = sorted(df_vendas['Comanda'].unique(), reverse=True)
+        for id_c in ids_reversos:
+            with st.expander(f"📦 Comanda #{id_c} - Detalhes"):
+                detalhe = df_vendas[df_vendas['Comanda'] == id_c]
+                st.write(f"Data: {detalhe['Data'].iloc[0]}")
+                st.dataframe(detalhe[["Item", "Preço"]], use_container_width=True)
+                st.write(f"**Valor total desta comanda: R$ {detalhe['Preço'].sum():.2f}**")
     else:
-        st.info("Nenhum pedido realizado ainda.")
-except:
-    st.info("Aguardando sincronização com a planilha.")
+        st.info("Nenhuma venda encontrada no banco de dados.")
