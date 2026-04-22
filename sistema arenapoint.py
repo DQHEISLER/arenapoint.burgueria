@@ -14,16 +14,20 @@ def get_data():
     try:
         return conn.read(worksheet="Sheet1", ttl=0) 
     except:
-        return pd.DataFrame(columns=["Comanda", "Data", "Item", "Preço"])
+        return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
 
 # --- INICIALIZAÇÃO DE ESTADOS ---
 if 'carrinho' not in st.session_state:
     st.session_state.carrinho = []
+if 'nome_cliente' not in st.session_state:
+    st.session_state.nome_cliente = ""
 
 df_vendas_atual = get_data()
 
 # Lógica para número da comanda
 if not df_vendas_atual.empty:
+    # Garantir que a coluna 'Comanda' seja tratada como numérica
+    df_vendas_atual['Comanda'] = pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce')
     proxima_comanda = int(df_vendas_atual['Comanda'].max()) + 1
 else:
     proxima_comanda = 1
@@ -36,30 +40,39 @@ cardapio = {
 }
 
 # --- INTERFACE POR ABAS ---
-tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Relatórios", "⚙️ Configurações/Reset"])
+tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Relatórios", "⚙️ Configurações"])
 
 with tab_vendas:
     st.title("🍔 Arena Point - Caixa")
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.subheader("Menu")
+        st.subheader("📝 Dados do Pedido")
+        # Novo campo para o nome
+        nome_input = st.text_input("Nome do Cliente:", value=st.session_state.nome_cliente, placeholder="Ex: Diego")
+        st.session_state.nome_cliente = nome_input
+
+        st.divider()
+        st.subheader("🍔 Menu")
         cat = st.radio("Categoria", list(cardapio.keys()))
         prod = st.selectbox("Produto", list(cardapio[cat].keys()))
         
         if st.button("➕ Adicionar Item"):
+            cliente_final = st.session_state.nome_cliente if st.session_state.nome_cliente else "Cliente Avulso"
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
+                "Nome": cliente_final,
                 "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "Item": prod,
                 "Preço": cardapio[cat][prod]
             })
-            st.toast("Item adicionado!")
+            st.toast(f"{prod} adicionado para {cliente_final}!")
 
     with col2:
-        st.subheader(f"📋 Comanda Atual: #{proxima_comanda}")
+        st.subheader(f"📋 Comanda #{proxima_comanda}")
         if st.session_state.carrinho:
             df_cart = pd.DataFrame(st.session_state.carrinho)
+            st.write(f"**Cliente:** {df_cart['Nome'].iloc[0]}")
             st.table(df_cart[["Item", "Preço"]])
             total_comanda = df_cart["Preço"].sum()
             st.write(f"### Total Comanda: R$ {total_comanda:.2f}")
@@ -68,8 +81,9 @@ with tab_vendas:
                 df_antigo = get_data()
                 df_final = pd.concat([df_antigo, df_cart], ignore_index=True)
                 conn.update(worksheet="Sheet1", data=df_final)
-                st.success(f"Pedido #{proxima_comanda} salvo!")
+                st.success(f"Pedido #{proxima_comanda} de {df_cart['Nome'].iloc[0]} salvo!")
                 st.session_state.carrinho = []
+                st.session_state.nome_cliente = "" # Reseta o nome para o próximo
                 st.rerun()
 
 with tab_relatorios:
@@ -94,35 +108,29 @@ with tab_relatorios:
         st.subheader("📂 Histórico por Comanda")
         ids_reversos = sorted(df_vendas['Comanda'].unique(), reverse=True)
         for id_c in ids_reversos:
-            with st.expander(f"📦 Comanda #{id_c}"):
-                detalhe = df_vendas[df_vendas['Comanda'] == id_c]
-                st.write(f"Data: {detalhe['Data'].iloc[0]}")
+            detalhe = df_vendas[df_vendas['Comanda'] == id_c]
+            nome_c = detalhe['Nome'].iloc[0] if 'Nome' in detalhe.columns else "N/A"
+            with st.expander(f"📦 Comanda #{id_c} - {nome_c}"):
+                st.write(f"**Data/Hora:** {detalhe['Data'].iloc[0]}")
                 st.table(detalhe[["Item", "Preço"]])
                 st.write(f"**Total: R$ {detalhe['Preço'].sum():.2f}**")
     else:
         st.info("Nenhuma venda encontrada.")
 
 with tab_config:
-    st.title("⚙️ Administração do Sistema")
-    st.warning("Ações abaixo apagam dados da planilha do Google!")
-
-    # RESETAR APENAS O DIA (Faturamento Diário)
+    st.title("⚙️ Administração")
     if st.button("🗑️ Resetar Faturamento de Hoje"):
         df_atual = get_data()
         if not df_atual.empty:
             df_atual['Data'] = pd.to_datetime(df_atual['Data'])
             hoje = datetime.now().date()
-            # Mantém apenas o que NÃO é de hoje
             df_filtrado = df_atual[df_atual['Data'].dt.date != hoje]
             conn.update(worksheet="Sheet1", data=df_filtrado)
-            st.success("Faturamento de hoje resetado!")
+            st.success("Dia resetado!")
             st.rerun()
 
-    st.divider()
-
-    # LIMPAR TUDO (Zerar sistema)
-    if st.button("🚨 LIMPAR TODOS OS PEDIDOS (Geral)"):
-        df_vazio = pd.DataFrame(columns=["Comanda", "Data", "Item", "Preço"])
+    if st.button("🚨 LIMPAR TUDO (Geral)"):
+        df_vazio = pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         conn.update(worksheet="Sheet1", data=df_vazio)
-        st.success("Todo o histórico foi apagado!")
+        st.success("Histórico apagado!")
         st.rerun()
