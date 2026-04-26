@@ -10,7 +10,7 @@ st.set_page_config(page_title="Arena Point - Sistema Estável", layout="wide")
 # Conexão com Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNÇÃO DE LEITURA COM CACHE (EVITA ERRO 429 E CORRIGE SOMA) ---
+# --- FUNÇÃO DE LEITURA COM CACHE ---
 @st.cache_data(ttl=10)
 def get_data():
     try:
@@ -18,7 +18,7 @@ def get_data():
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         
-        # CORREÇÃO CRÍTICA: Garantir que datas e preços sejam números/datas reais para a soma funcionar
+        # Conversão robusta de tipos
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
         df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
         df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce')
@@ -75,7 +75,7 @@ with tab_vendas:
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
                 "Nome": cliente_final,
-                "Data": datetime.now(), # Salva como objeto de data real
+                "Data": datetime.now(), 
                 "Item": nome_final_item,
                 "Preço": float(preco)
             })
@@ -106,44 +106,59 @@ with tab_vendas:
                     conn.update(worksheet="Sheet1", data=df_final)
                     st.session_state.carrinho = []
                     st.session_state.nome_cliente = ""
-                    st.cache_data.clear() # Limpa o cache para atualizar faturamento na hora
+                    st.cache_data.clear() 
                     st.success("Pedido salvo!")
                     time.sleep(1)
                     st.rerun()
         else:
             st.info("Adicione itens para começar.")
 
-# --- ABA DE RELATÓRIOS (COM SOMA CORRIGIDA) ---
+# --- ABA DE RELATÓRIOS (CORREÇÃO DE SOMA) ---
 with tab_relatorios:
     st.title("📊 Relatórios Financeiros")
-    if st.button("🔄 Sincronizar"):
+    if st.button("🔄 Atualizar Relatório"):
         st.cache_data.clear()
         st.rerun()
 
     df_vendas = get_data()
+    
     if not df_vendas.empty:
+        # Pega a data e hora atual
         agora = datetime.now()
         hoje = agora.date()
         
-        # Filtros de data para faturamento
+        # Filtro Robusto: Convertemos a coluna Data para apenas "date" (sem horas) para comparar
         df_hoje = df_vendas[df_vendas['Data'].dt.date == hoje]
-        df_mes = df_vendas[(df_vendas['Data'].dt.month == agora.month) & (df_vendas['Data'].dt.year == agora.year)]
         
-        m1, m2, m3 = st.columns(3)
-        m1.metric("💰 Faturamento Hoje", f"R$ {float(df_hoje['Preço'].sum()):.2f}")
-        m2.metric("🗓️ Faturamento Mensal", f"R$ {float(df_mes['Preço'].sum()):.2f}")
-        m3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
+        # Filtro Mensal: Compara mês e ano simultaneamente
+        df_mes = df_vendas[
+            (df_vendas['Data'].dt.month == agora.month) & 
+            (df_vendas['Data'].dt.year == agora.year)
+        ]
+        
+        # Cálculo das métricas
+        total_hoje = float(df_hoje['Preço'].sum())
+        total_mes = float(df_mes['Preço'].sum())
+        qtd_pedidos = len(df_hoje['Comanda'].unique())
+        
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("💰 Faturamento Hoje", f"R$ {total_hoje:.2f}")
+        col_m2.metric("🗓️ Faturamento Mensal", f"R$ {total_mes:.2f}")
+        col_m3.metric("📦 Pedidos Hoje", qtd_pedidos)
         
         st.divider()
         st.subheader("📂 Últimas Comandas")
-        ids = sorted(df_vendas['Comanda'].unique(), reverse=True)[:15]
-        for id_c in ids:
-            detalhe = df_vendas[df_vendas['Comanda'] == id_c]
-            total_c = detalhe['Preço'].sum()
-            nome_cli = detalhe['Nome'].iloc[0] if not pd.isna(detalhe['Nome'].iloc[0]) else "Avulso"
-            with st.expander(f"📦 Comanda #{int(id_c)} - {nome_cli} | Total: R$ {total_c:.2f}"):
-                st.table(detalhe[["Item", "Preço"]])
-                st.write(f"**Valor Final: R$ {total_c:.2f}**")
+        # Mostra as últimas 15 comandas em ordem decrescente
+        if not df_vendas['Comanda'].empty:
+            ids = sorted(df_vendas['Comanda'].dropna().unique(), reverse=True)[:15]
+            for id_c in ids:
+                detalhe = df_vendas[df_vendas['Comanda'] == id_c]
+                total_c = detalhe['Preço'].sum()
+                nome_cli = detalhe['Nome'].iloc[0] if not pd.isna(detalhe['Nome'].iloc[0]) else "Avulso"
+                with st.expander(f"📦 Comanda #{int(id_c)} - {nome_cli} | Total: R$ {total_c:.2f}"):
+                    st.table(detalhe[["Item", "Preço"]])
+    else:
+        st.warning("Nenhum dado encontrado na planilha para gerar relatórios.")
 
 with tab_config:
     st.title("⚙️ Ajustes")
