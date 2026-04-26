@@ -3,7 +3,6 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 import time
-import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Arena Point - Sistema Oficial", layout="wide", page_icon="🍔")
@@ -27,26 +26,32 @@ def get_data():
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         
-        # --- LIMPEZA DE PREÇO (CORRIGIDA) ---
+        # --- LIMPEZA DE PREÇO BLINDADA (RESOLVE O ERRO DE FLOAT) ---
         if 'Preço' in df.columns:
-            # 1. Converte para string e remove R$ e espaços
-            df['Preço'] = df['Preço'].astype(str).str.replace('R$', '', regex=False).str.strip()
-            
-            # 2. Se o número tiver ponto E vírgula (ex: 1.200,50), remove o ponto
-            # Se tiver apenas vírgula (ex: 26,00), apenas substitui por ponto
             def limpar_valor(v):
-                if not v or v == 'nan': return "0.0"
-                # Remove pontos que servem apenas como separador de milhar
+                # Se já for um número (float ou int), retorna ele mesmo
+                if isinstance(v, (int, float)):
+                    return float(v)
+                
+                # Se for texto, limpa caracteres de moeda e espaços
+                v = str(v).replace('R$', '').strip()
+                if not v or v.lower() == 'nan': 
+                    return 0.0
+                
+                # Tratamento de padrão brasileiro: 1.200,50 -> 1200.50
                 if '.' in v and ',' in v:
-                    v = v.replace('.', '')
-                # Troca a vírgula decimal por ponto
-                v = v.replace(',', '.')
-                return v
+                    v = v.replace('.', '') # Remove ponto de milhar
+                v = v.replace(',', '.')    # Troca vírgula decimal por ponto
+                
+                try:
+                    return float(v)
+                except:
+                    return 0.0
 
+            # Aplica a limpeza célula por célula com segurança
             df['Preço'] = df['Preço'].apply(limpar_valor)
-            df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
         
-        # Limpeza de Comanda e Data
+        # Restante da limpeza técnica
         df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce').fillna(0).astype(int)
         df['Data_DT'] = pd.to_datetime(df['Data'], errors='coerce')
         df['Data_Texto'] = df['Data_DT'].dt.strftime('%Y-%m-%d')
@@ -169,14 +174,10 @@ with tab_relatorios:
     else:
         st.warning("Nenhum dado encontrado.")
 
-# --- ABA 3: CONFIGURAÇÕES E AJUSTES ---
+# --- ABA 3: CONFIGURAÇÕES ---
 with tab_config:
     st.title("⚙️ Ajustes e Gerenciamento")
-    if st.button("🛑 FECHAR TURNO"):
-        st.balloons()
-        st.info("Turno encerrado.")
     
-    st.divider()
     st.subheader("🛠️ Cancelar Itens Lançados")
     busca_c = st.number_input("Número da comanda para editar:", min_value=1, step=1)
     df_ajuste = get_data()
@@ -188,7 +189,6 @@ with tab_config:
                 ca.write(row['Item'])
                 cb.write(formatar_moeda(row['Preço']))
                 if cc.button("Excluir", key=f"ajuste_{idx}"):
-                    # Lê a planilha original completa para garantir que o drop seja no índice correto
                     df_base = conn.read(worksheet="Sheet1", ttl=0)
                     df_nova = df_base.drop(idx)
                     conn.update(worksheet="Sheet1", data=df_nova)
