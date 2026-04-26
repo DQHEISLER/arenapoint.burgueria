@@ -9,18 +9,20 @@ st.set_page_config(page_title="Arena Point - Gestão Total", layout="wide")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNÇÃO DE LEITURA SEGURA ---
-def get_data():
+# --- FUNÇÃO DE LEITURA COM CACHE (EVITA ERRO 429) ---
+# O ttl=10 faz o sistema esperar 10 segundos antes de ler o Google de novo,
+# a menos que a gente force a atualização.
+@st.cache_data(ttl=10)
+def get_data_cached():
     try:
-        df = conn.read(worksheet="Sheet1", ttl=0)
-        if df is None or (isinstance(df, pd.DataFrame) and df.empty and len(df.columns) < 2):
+        df = conn.read(worksheet="Sheet1")
+        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
-        
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
         return df
     except Exception as e:
-        st.error(f"❌ ERRO DE CONEXÃO: {e}")
-        st.stop()
+        st.error(f"⚠️ Google Sheets ocupado. Aguarde 5 segundos... (Erro: {e})")
+        return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
 
 if 'carrinho' not in st.session_state:
     st.session_state.carrinho = []
@@ -30,15 +32,22 @@ tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Finan
 
 # --- ABA DE VENDAS ---
 with tab_vendas:
-    df_vendas_atual = get_data()
-    proxima_comanda = int(pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce').max() or 0) + 1
+    # Busca dados (usa o cache se tiver sido lido há menos de 10s)
+    df_vendas_atual = get_data_cached()
+    
+    # Cálculo da próxima comanda
+    if not df_vendas_atual.empty:
+        df_vendas_atual['Comanda'] = pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce')
+        proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
+    else:
+        proxima_comanda = 1
 
     st.title("🍔 Arena Point - Caixa")
     col1, col2 = st.columns([1, 1.2])
 
     with col1:
         st.subheader("📝 Novo Pedido")
-        nome_cliente = st.text_input("Cliente:", placeholder="Ex: Diego")
+        nome_cliente = st.text_input("Cliente:", key="input_nome")
         
         st.divider()
         cardapio = {
@@ -56,27 +65,27 @@ with tab_vendas:
             item_nome = st.selectbox("Produto", list(cardapio[cat].keys()))
             preco = cardapio[cat][item_nome]
         
-        obs = st.text_input("📝 Personalizar:")
+        obs = st.text_input("📝 Personalizar:", key="input_obs")
         
         if st.button("➕ Adicionar ao Carrinho", use_container_width=True):
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
                 "Nome": nome_cliente if nome_cliente else "Avulso",
-                "Data": datetime.now(),
+                "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "Item": f"{item_nome} ({obs})" if obs else item_nome,
                 "Preço": preco
             })
             st.rerun()
 
     with col2:
-        st.subheader(f"📋 Comanda Atual #{proxima_comanda}")
+        st.subheader(f"📋 Comanda #{proxima_comanda}")
         if st.session_state.carrinho:
             df_c = pd.DataFrame(st.session_state.carrinho)
             for i, row in df_c.iterrows():
-                c_i, c_p, c_b = st.columns([3, 1, 1])
-                c_i.write(row['Item'])
-                c_p.write(f"R$ {row['Preço']:.2f}")
-                if c_b.button("🗑️", key=f"venda_{i}"):
+                ci, cp, cb = st.columns([3, 1, 1])
+                ci.write(row['Item'])
+                cp.write(f"R$ {row['Preço']:.2f}")
+                if cb.button("🗑️", key=f"del_{i}"):
                     st.session_state.carrinho.pop(i)
                     st.rerun()
             
@@ -85,74 +94,66 @@ with tab_vendas:
             st.write(f"### Total: R$ {total_venda:.2f}")
             
             if st.button("✅ FINALIZAR E LANÇAR", type="primary", use_container_width=True):
-                with st.spinner('Salvando...'):
-                    df_online = get_data()
+                with st.spinner('Lançando...'):
+                    # Lê o dado real sem cache para salvar
+                    df_online = conn.read(worksheet="Sheet1")
                     df_final = pd.concat([df_online, df_c], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=df_final)
                     st.session_state.carrinho = []
-                    st.success("Lançado!")
+                    st.cache_data.clear() # Limpa o cache para a próxima leitura vir atualizada
+                    st.success("Lançado com sucesso!")
                     time.sleep(1)
                     st.rerun()
-        else:
-            st.info("Carrinho vazio.")
 
 # --- ABA DE RELATÓRIOS ---
 with tab_relatorios:
     st.title("📊 Gestão Financeira")
-    df_rel = get_data()
+    if st.button("🔄 Atualizar Relatório"):
+        st.cache_data.clear()
+        st.rerun()
+
+    df_rel = get_data_cached()
     
     if not df_rel.empty:
-        agora = datetime.now()
-        hoje = agora.date()
-        mes_atual = agora.month
-        ano_atual = agora.year
+        hoje = datetime.now().date()
+        mes_atual = datetime.now().month
         
         df_hoje = df_rel[df_rel['Data'].dt.date == hoje]
-        df_mes = df_rel[(df_rel['Data'].dt.month == mes_atual) & (df_rel['Data'].dt.year == ano_atual)]
+        df_mes = df_rel[df_rel['Data'].dt.month == mes_atual]
         
         m1, m2, m3 = st.columns(3)
-        m1.metric("💰 Faturamento Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
-        m2.metric("🗓️ Faturamento Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
-        m3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
+        m1.metric("💰 Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
+        m2.metric("🗓️ Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
+        m3.metric("📦 Pedidos", len(df_hoje['Comanda'].unique()))
         
         st.divider()
-        
-        st.subheader("🏁 Finalizar Expediente")
-        if st.button("🛑 FECHAR TURNO AGORA", type="secondary"):
-            st.warning("Turno encerrado para conferência.")
-            st.balloons()
-
-        st.divider()
-        st.subheader("📂 Histórico de Comandas")
-        
-        # Filtra e exibe as últimas 15 comandas lançadas
-        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:15] 
+        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:10]
         for id_c in ids:
             det = df_rel[df_rel['Comanda'] == id_c]
-            total_comanda = det['Preço'].sum()
-            nome_cli = det['Nome'].iloc[0] if not pd.isna(det['Nome'].iloc[0]) else "Avulso"
-            
-            # Título da comanda agora exibe o Total diretamente
-            with st.expander(f"📦 Comanda #{int(id_c)} - {nome_cli} | Total: R$ {total_comanda:.2f}"):
+            total = det['Preço'].sum()
+            with st.expander(f"📦 Comanda #{int(id_c)} | Total: R$ {total:.2f}"):
                 st.table(det[["Item", "Preço"]])
-                st.write(f"**Total da Comanda: R$ {total_comanda:.2f}**")
 
 # --- ABA DE AJUSTES ---
 with tab_config:
     st.title("⚙️ Ajustes")
-    busca_c = st.number_input("Número da comanda para corrigir/remover item:", min_value=1, step=1)
-    df_db = get_data()
-    
+    busca_c = st.number_input("Número da comanda:", min_value=1, step=1)
+    if st.button("Buscar para Editar"):
+        st.cache_data.clear() # Garante que vai buscar o dado mais novo
+        
+    df_db = get_data_cached()
     if not df_db.empty:
         df_db['Comanda'] = pd.to_numeric(df_db['Comanda'], errors='coerce')
         itens = df_db[df_db['Comanda'] == busca_c]
         
-        if not itens.empty:
-            for idx, row in itens.iterrows():
-                ca, cb, cc = st.columns([3, 1, 1])
-                ca.write(row['Item'])
-                cb.write(f"R$ {row['Preço']:.2f}")
-                if cc.button("❌ Cancelar", key=f"cancel_{idx}"):
-                    df_up = df_db.drop(idx)
-                    conn.update(worksheet="Sheet1", data=df_up)
-                    st.rerun()
+        for idx, row in itens.iterrows():
+            ca, cb, cc = st.columns([3, 1, 1])
+            ca.write(row['Item'])
+            cb.write(f"R$ {row['Preço']:.2f}")
+            if cc.button("❌ Cancelar", key=f"ajuste_{idx}"):
+                # Na hora de deletar, lemos o real
+                df_real = conn.read(worksheet="Sheet1")
+                df_up = df_real.drop(idx)
+                conn.update(worksheet="Sheet1", data=df_up)
+                st.cache_data.clear()
+                st.rerun()
