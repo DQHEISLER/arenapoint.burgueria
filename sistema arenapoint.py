@@ -10,16 +10,22 @@ st.set_page_config(page_title="Arena Point - Sistema Estável", layout="wide")
 # Conexão com Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNÇÃO DE LEITURA SEGURA (IMPEDE RESET) ---
+# --- FUNÇÃO DE LEITURA COM CACHE (EVITA ERRO 429 E CORRIGE SOMA) ---
+@st.cache_data(ttl=10)
 def get_data():
     try:
-        df = conn.read(worksheet="Sheet1", ttl=0)
-        if df is None or (isinstance(df, pd.DataFrame) and df.empty and len(df.columns) < 2):
+        df = conn.read(worksheet="Sheet1")
+        if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
+        
+        # CORREÇÃO CRÍTICA: Garantir que datas e preços sejam números/datas reais para a soma funcionar
+        df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
+        df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
+        df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce')
         return df
     except Exception as e:
-        st.error(f"❌ ERRO DE CONEXÃO: Não foi possível ler a planilha. Verifique a internet. Detalhe: {e}")
-        st.stop() # Interrompe o código para evitar que salve dados vazios por cima
+        st.error(f"❌ ERRO DE CONEXÃO: {e}")
+        return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
 
 # --- INICIALIZAÇÃO DE ESTADOS ---
 if 'carrinho' not in st.session_state:
@@ -31,13 +37,8 @@ if 'nome_cliente' not in st.session_state:
 tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Relatórios", "⚙️ Ajustes e Config"])
 
 with tab_vendas:
-    # Lógica de número de comanda puxando dado fresco
     df_vendas_atual = get_data()
-    if not df_vendas_atual.empty:
-        df_vendas_atual['Comanda'] = pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce')
-        proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
-    else:
-        proxima_comanda = 1
+    proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
 
     st.title("🍔 Arena Point - Caixa")
     col1, col2 = st.columns([1, 1.2])
@@ -65,20 +66,18 @@ with tab_vendas:
             item_nome = st.selectbox("Produto", list(cardapio[cat].keys()))
             preco = cardapio[cat][item_nome]
         
-        # NOVO: CAMPO PARA ADICIONAR OU RETIRAR ALGO
         obs = st.text_input("📝 Personalizar (Ex: Sem cebola / + Bacon):", placeholder="Opcional")
         
         if st.button("➕ Adicionar Item", use_container_width=True):
             cliente_final = st.session_state.nome_cliente if st.session_state.nome_cliente else "Cliente Avulso"
-            # Salva o item com a observação se ela existir
             nome_final_item = f"{item_nome} ({obs})" if obs else item_nome
             
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
                 "Nome": cliente_final,
-                "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Data": datetime.now(), # Salva como objeto de data real
                 "Item": nome_final_item,
-                "Preço": preco
+                "Preço": float(preco)
             })
             st.toast(f"Adicionado: {nome_final_item}")
             st.rerun()
@@ -88,7 +87,6 @@ with tab_vendas:
         if st.session_state.carrinho:
             df_cart = pd.DataFrame(st.session_state.carrinho)
             
-            # Lista de itens com botão remover
             for i, row in df_cart.iterrows():
                 c_i, c_p, c_b = st.columns([3, 1, 1])
                 c_i.write(row['Item'])
@@ -102,43 +100,72 @@ with tab_vendas:
             st.write(f"### Total: R$ {total_comanda:.2f}")
 
             if st.button("✅ FINALIZAR E SALVAR", type="primary", use_container_width=True):
-                with st.spinner('Salvando no Google Sheets... Aguarde.'):
-                    # Passo 1: Lê o dado mais recente para evitar conflito
-                    df_online = get_data()
-                    # Passo 2: Junta os dados
+                with st.spinner('Salvando no Google Sheets...'):
+                    df_online = conn.read(worksheet="Sheet1")
                     df_final = pd.concat([df_online, df_cart], ignore_index=True)
-                    # Passo 3: Tenta salvar
-                    try:
-                        conn.update(worksheet="Sheet1", data=df_final)
-                        st.session_state.carrinho = []
-                        st.session_state.nome_cliente = ""
-                        st.success("Pedido salvo com sucesso!")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Erro ao salvar: {e}")
+                    conn.update(worksheet="Sheet1", data=df_final)
+                    st.session_state.carrinho = []
+                    st.session_state.nome_cliente = ""
+                    st.cache_data.clear() # Limpa o cache para atualizar faturamento na hora
+                    st.success("Pedido salvo!")
+                    time.sleep(1)
+                    st.rerun()
         else:
             st.info("Adicione itens para começar.")
 
-# --- ABAS DE RELATÓRIO E CONFIGURAÇÃO (MANTIDAS) ---
+# --- ABA DE RELATÓRIOS (COM SOMA CORRIGIDA) ---
 with tab_relatorios:
-    st.title("📊 Relatórios")
+    st.title("📊 Relatórios Financeiros")
+    if st.button("🔄 Sincronizar"):
+        st.cache_data.clear()
+        st.rerun()
+
     df_vendas = get_data()
     if not df_vendas.empty:
-        df_vendas['Data'] = pd.to_datetime(df_vendas['Data'])
-        hoje = datetime.now().date()
-        fatur_dia = df_vendas[df_vendas['Data'].dt.date == hoje]['Preço'].sum()
-        st.metric("Faturamento Hoje", f"R$ {fatur_dia:.2f}")
+        agora = datetime.now()
+        hoje = agora.date()
+        
+        # Filtros de data para faturamento
+        df_hoje = df_vendas[df_vendas['Data'].dt.date == hoje]
+        df_mes = df_vendas[(df_vendas['Data'].dt.month == agora.month) & (df_vendas['Data'].dt.year == agora.year)]
+        
+        m1, m2, m3 = st.columns(3)
+        m1.metric("💰 Faturamento Hoje", f"R$ {float(df_hoje['Preço'].sum()):.2f}")
+        m2.metric("🗓️ Faturamento Mensal", f"R$ {float(df_mes['Preço'].sum()):.2f}")
+        m3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
         
         st.divider()
-        ids = sorted(df_vendas['Comanda'].unique(), reverse=True)
+        st.subheader("📂 Últimas Comandas")
+        ids = sorted(df_vendas['Comanda'].unique(), reverse=True)[:15]
         for id_c in ids:
             detalhe = df_vendas[df_vendas['Comanda'] == id_c]
-            with st.expander(f"📦 Comanda #{int(id_c)} - {detalhe['Nome'].iloc[0]}"):
+            total_c = detalhe['Preço'].sum()
+            nome_cli = detalhe['Nome'].iloc[0] if not pd.isna(detalhe['Nome'].iloc[0]) else "Avulso"
+            with st.expander(f"📦 Comanda #{int(id_c)} - {nome_cli} | Total: R$ {total_c:.2f}"):
                 st.table(detalhe[["Item", "Preço"]])
-                st.write(f"**Total: R$ {detalhe['Preço'].sum():.2f}**")
+                st.write(f"**Valor Final: R$ {total_c:.2f}**")
 
 with tab_config:
     st.title("⚙️ Ajustes")
-    # ... (Botões de correção de número e cancelar item se mantêm aqui)
-    st.info("Use esta aba para correções pontuais em comandas já fechadas.")
+    st.subheader("🏁 Turno")
+    if st.button("🛑 FECHAR TURNO AGORA", type="secondary"):
+        st.warning("Turno encerrado para conferência.")
+        st.balloons()
+    
+    st.divider()
+    st.subheader("🛠️ Cancelar Itens")
+    busca_c = st.number_input("Número da comanda para editar:", min_value=1, step=1)
+    df_db = get_data()
+    if not df_db.empty:
+        itens = df_db[df_db['Comanda'] == busca_c]
+        if not itens.empty:
+            for idx, row in itens.iterrows():
+                ca, cb, cc = st.columns([3, 1, 1])
+                ca.write(row['Item'])
+                cb.write(f"R$ {row['Preço']:.2f}")
+                if cc.button("❌ Remover", key=f"ajuste_{idx}"):
+                    df_real = conn.read(worksheet="Sheet1")
+                    df_up = df_real.drop(idx)
+                    conn.update(worksheet="Sheet1", data=df_up)
+                    st.cache_data.clear()
+                    st.rerun()
