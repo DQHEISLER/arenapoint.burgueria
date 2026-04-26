@@ -17,13 +17,13 @@ def get_data_cached():
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         
-        # Converte a coluna Data e remove fusos horários para comparação direta
+        # CORREÇÃO CRÍTICA: Garantir que datas e preços sejam números/datas reais
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
-        # Garante que Preço seja numérico para soma
-        df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0)
+        df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
+        df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce')
         return df
     except Exception as e:
-        st.error(f"⚠️ Erro ao ler dados: {e}")
+        st.error(f"⚠️ Erro ao acessar dados: {e}")
         return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
 
 if 'carrinho' not in st.session_state:
@@ -35,12 +35,7 @@ tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Finan
 # --- ABA DE VENDAS ---
 with tab_vendas:
     df_vendas_atual = get_data_cached()
-    
-    if not df_vendas_atual.empty:
-        df_vendas_atual['Comanda'] = pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce')
-        proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
-    else:
-        proxima_comanda = 1
+    proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
 
     st.title("🍔 Arena Point - Caixa")
     col1, col2 = st.columns([1, 1.2])
@@ -71,9 +66,9 @@ with tab_vendas:
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
                 "Nome": nome_cliente if nome_cliente else "Avulso",
-                "Data": datetime.now(), # Salvando como objeto datetime real
+                "Data": datetime.now(),
                 "Item": f"{item_nome} ({obs})" if obs else item_nome,
-                "Preço": preco
+                "Preço": float(preco)
             })
             st.rerun()
 
@@ -99,7 +94,7 @@ with tab_vendas:
                     df_final = pd.concat([df_online, df_c], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=df_final)
                     st.session_state.carrinho = []
-                    st.cache_data.clear() # LIMPA O CACHE PARA ATUALIZAR O RELATÓRIO
+                    st.cache_data.clear() 
                     st.success("Lançado com sucesso!")
                     time.sleep(1)
                     st.rerun()
@@ -108,52 +103,59 @@ with tab_vendas:
 with tab_relatorios:
     st.title("📊 Gestão Financeira")
     
-    # Força a leitura do dado mais recente
+    if st.button("🔄 Sincronizar Dados"):
+        st.cache_data.clear()
+        st.rerun()
+
     df_rel = get_data_cached()
     
     if not df_rel.empty:
-        hoje = datetime.now().date()
-        mes_atual = datetime.now().month
-        ano_atual = datetime.now().year
+        agora = datetime.now()
+        hoje = agora.date()
         
-        # Filtros robustos para data
+        # Filtros de tempo corrigidos
         df_hoje = df_rel[df_rel['Data'].dt.date == hoje]
-        df_mes = df_rel[(df_rel['Data'].dt.month == mes_atual) & (df_rel['Data'].dt.year == ano_atual)]
+        df_mes = df_rel[(df_rel['Data'].dt.month == agora.month) & (df_rel['Data'].dt.year == agora.year)]
         
         m1, m2, m3 = st.columns(3)
-        m1.metric("💰 Faturamento Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
-        m2.metric("🗓️ Faturamento Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
+        # Somas formatadas explicitamente como float
+        m1.metric("💰 Faturamento Hoje", f"R$ {float(df_hoje['Preço'].sum()):.2f}")
+        m2.metric("🗓️ Faturamento Mensal", f"R$ {float(df_mes['Preço'].sum()):.2f}")
         m3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
         
         st.divider()
-        st.subheader("📂 Últimas Comandas")
-        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:10]
+        
+        st.subheader("🏁 Turno")
+        if st.button("🛑 FECHAR TURNO AGORA", type="secondary"):
+            st.warning("Turno encerrado para conferência.")
+            st.balloons()
+
+        st.divider()
+        st.subheader("📂 Histórico de Comandas")
+        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:15]
         for id_c in ids:
             det = df_rel[df_rel['Comanda'] == id_c]
-            total = det['Preço'].sum()
-            with st.expander(f"📦 Comanda #{int(id_c)} | Total: R$ {total:.2f}"):
+            total_c = det['Preço'].sum()
+            nome_c = det['Nome'].iloc[0] if not pd.isna(det['Nome'].iloc[0]) else "Avulso"
+            with st.expander(f"📦 Comanda #{int(id_c)} - {nome_c} | Total: R$ {total_c:.2f}"):
                 st.table(det[["Item", "Preço"]])
 
 # --- ABA DE AJUSTES ---
 with tab_config:
     st.title("⚙️ Ajustes")
-    busca_c = st.number_input("Número da comanda:", min_value=1, step=1)
+    busca_c = st.number_input("Corrigir Comanda nº:", min_value=1, step=1)
     
     df_db = get_data_cached()
     if not df_db.empty:
-        df_db['Comanda'] = pd.to_numeric(df_db['Comanda'], errors='coerce')
         itens = df_db[df_db['Comanda'] == busca_c]
-        
         if not itens.empty:
             for idx, row in itens.iterrows():
                 ca, cb, cc = st.columns([3, 1, 1])
                 ca.write(row['Item'])
                 cb.write(f"R$ {row['Preço']:.2f}")
-                if cc.button("❌ Cancelar", key=f"ajuste_{idx}"):
+                if cc.button("❌ Remover Item", key=f"ajuste_{idx}"):
                     df_real = conn.read(worksheet="Sheet1")
                     df_up = df_real.drop(idx)
                     conn.update(worksheet="Sheet1", data=df_up)
                     st.cache_data.clear()
-                    st.success("Item removido!")
-                    time.sleep(1)
                     st.rerun()
