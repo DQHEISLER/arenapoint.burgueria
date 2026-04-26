@@ -9,19 +9,21 @@ st.set_page_config(page_title="Arena Point - Gestão Total", layout="wide")
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNÇÃO DE LEITURA COM CACHE (EVITA ERRO 429) ---
-# O ttl=10 faz o sistema esperar 10 segundos antes de ler o Google de novo,
-# a menos que a gente force a atualização.
+# --- FUNÇÃO DE LEITURA COM CACHE ---
 @st.cache_data(ttl=10)
 def get_data_cached():
     try:
         df = conn.read(worksheet="Sheet1")
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
+        
+        # Converte a coluna Data e remove fusos horários para comparação direta
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
+        # Garante que Preço seja numérico para soma
+        df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0)
         return df
     except Exception as e:
-        st.error(f"⚠️ Google Sheets ocupado. Aguarde 5 segundos... (Erro: {e})")
+        st.error(f"⚠️ Erro ao ler dados: {e}")
         return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
 
 if 'carrinho' not in st.session_state:
@@ -32,10 +34,8 @@ tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Finan
 
 # --- ABA DE VENDAS ---
 with tab_vendas:
-    # Busca dados (usa o cache se tiver sido lido há menos de 10s)
     df_vendas_atual = get_data_cached()
     
-    # Cálculo da próxima comanda
     if not df_vendas_atual.empty:
         df_vendas_atual['Comanda'] = pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce')
         proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
@@ -71,7 +71,7 @@ with tab_vendas:
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
                 "Nome": nome_cliente if nome_cliente else "Avulso",
-                "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Data": datetime.now(), # Salvando como objeto datetime real
                 "Item": f"{item_nome} ({obs})" if obs else item_nome,
                 "Preço": preco
             })
@@ -95,12 +95,11 @@ with tab_vendas:
             
             if st.button("✅ FINALIZAR E LANÇAR", type="primary", use_container_width=True):
                 with st.spinner('Lançando...'):
-                    # Lê o dado real sem cache para salvar
                     df_online = conn.read(worksheet="Sheet1")
                     df_final = pd.concat([df_online, df_c], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=df_final)
                     st.session_state.carrinho = []
-                    st.cache_data.clear() # Limpa o cache para a próxima leitura vir atualizada
+                    st.cache_data.clear() # LIMPA O CACHE PARA ATUALIZAR O RELATÓRIO
                     st.success("Lançado com sucesso!")
                     time.sleep(1)
                     st.rerun()
@@ -108,25 +107,26 @@ with tab_vendas:
 # --- ABA DE RELATÓRIOS ---
 with tab_relatorios:
     st.title("📊 Gestão Financeira")
-    if st.button("🔄 Atualizar Relatório"):
-        st.cache_data.clear()
-        st.rerun()
-
+    
+    # Força a leitura do dado mais recente
     df_rel = get_data_cached()
     
     if not df_rel.empty:
         hoje = datetime.now().date()
         mes_atual = datetime.now().month
+        ano_atual = datetime.now().year
         
+        # Filtros robustos para data
         df_hoje = df_rel[df_rel['Data'].dt.date == hoje]
-        df_mes = df_rel[df_rel['Data'].dt.month == mes_atual]
+        df_mes = df_rel[(df_rel['Data'].dt.month == mes_atual) & (df_rel['Data'].dt.year == ano_atual)]
         
         m1, m2, m3 = st.columns(3)
-        m1.metric("💰 Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
-        m2.metric("🗓️ Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
-        m3.metric("📦 Pedidos", len(df_hoje['Comanda'].unique()))
+        m1.metric("💰 Faturamento Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
+        m2.metric("🗓️ Faturamento Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
+        m3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
         
         st.divider()
+        st.subheader("📂 Últimas Comandas")
         ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:10]
         for id_c in ids:
             det = df_rel[df_rel['Comanda'] == id_c]
@@ -138,22 +138,22 @@ with tab_relatorios:
 with tab_config:
     st.title("⚙️ Ajustes")
     busca_c = st.number_input("Número da comanda:", min_value=1, step=1)
-    if st.button("Buscar para Editar"):
-        st.cache_data.clear() # Garante que vai buscar o dado mais novo
-        
+    
     df_db = get_data_cached()
     if not df_db.empty:
         df_db['Comanda'] = pd.to_numeric(df_db['Comanda'], errors='coerce')
         itens = df_db[df_db['Comanda'] == busca_c]
         
-        for idx, row in itens.iterrows():
-            ca, cb, cc = st.columns([3, 1, 1])
-            ca.write(row['Item'])
-            cb.write(f"R$ {row['Preço']:.2f}")
-            if cc.button("❌ Cancelar", key=f"ajuste_{idx}"):
-                # Na hora de deletar, lemos o real
-                df_real = conn.read(worksheet="Sheet1")
-                df_up = df_real.drop(idx)
-                conn.update(worksheet="Sheet1", data=df_up)
-                st.cache_data.clear()
-                st.rerun()
+        if not itens.empty:
+            for idx, row in itens.iterrows():
+                ca, cb, cc = st.columns([3, 1, 1])
+                ca.write(row['Item'])
+                cb.write(f"R$ {row['Preço']:.2f}")
+                if cc.button("❌ Cancelar", key=f"ajuste_{idx}"):
+                    df_real = conn.read(worksheet="Sheet1")
+                    df_up = df_real.drop(idx)
+                    conn.update(worksheet="Sheet1", data=df_up)
+                    st.cache_data.clear()
+                    st.success("Item removido!")
+                    time.sleep(1)
+                    st.rerun()
