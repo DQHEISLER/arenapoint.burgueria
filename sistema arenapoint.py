@@ -11,17 +11,24 @@ st.set_page_config(page_title="Arena Point - Sistema Estável", layout="wide")
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 # --- FUNÇÃO DE LEITURA COM CACHE ---
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=5) # Reduzi para 5 segundos para ser mais rápido
 def get_data():
     try:
-        df = conn.read(worksheet="Sheet1")
+        # Lendo sem cache inicial para garantir que pegamos o que está lá
+        df = conn.read(worksheet="Sheet1", ttl=0)
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         
-        # Conversão robusta de tipos
+        # --- LIMPEZA DE DADOS CRÍTICA ---
+        # 1. Converte Data e remove informações de fuso horário (evita erro de comparação)
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
+        
+        # 2. Garante que Preço é número (float) e remove erros
         df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
-        df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce')
+        
+        # 3. Garante que Comanda é número inteiro
+        df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce').fillna(0)
+        
         return df
     except Exception as e:
         st.error(f"❌ ERRO DE CONEXÃO: {e}")
@@ -66,7 +73,7 @@ with tab_vendas:
             item_nome = st.selectbox("Produto", list(cardapio[cat].keys()))
             preco = cardapio[cat][item_nome]
         
-        obs = st.text_input("📝 Personalizar (Ex: Sem cebola / + Bacon):", placeholder="Opcional")
+        obs = st.text_input("📝 Personalizar:", placeholder="Opcional")
         
         if st.button("➕ Adicionar Item", use_container_width=True):
             cliente_final = st.session_state.nome_cliente if st.session_state.nome_cliente else "Cliente Avulso"
@@ -101,9 +108,12 @@ with tab_vendas:
 
             if st.button("✅ FINALIZAR E SALVAR", type="primary", use_container_width=True):
                 with st.spinner('Salvando no Google Sheets...'):
-                    df_online = conn.read(worksheet="Sheet1")
+                    # Lendo o online para dar o append correto
+                    df_online = conn.read(worksheet="Sheet1", ttl=0)
                     df_final = pd.concat([df_online, df_cart], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=df_final)
+                    
+                    # Limpando tudo para o próximo
                     st.session_state.carrinho = []
                     st.session_state.nome_cliente = ""
                     st.cache_data.clear() 
@@ -113,52 +123,56 @@ with tab_vendas:
         else:
             st.info("Adicione itens para começar.")
 
-# --- ABA DE RELATÓRIOS (CORREÇÃO DE SOMA) ---
+# --- ABA DE RELATÓRIOS (SOMA CORRIGIDA) ---
 with tab_relatorios:
     st.title("📊 Relatórios Financeiros")
-    if st.button("🔄 Atualizar Relatório"):
+    
+    if st.button("🔄 Sincronizar Agora"):
         st.cache_data.clear()
         st.rerun()
 
     df_vendas = get_data()
     
     if not df_vendas.empty:
-        # Pega a data e hora atual
-        agora = datetime.now()
-        hoje = agora.date()
+        # 1. Pega a data de hoje sem horas (meia-noite)
+        hoje_dt = pd.to_datetime(datetime.now().date())
+        mes_atual = datetime.now().month
+        ano_atual = datetime.now().year
         
-        # Filtro Robusto: Convertemos a coluna Data para apenas "date" (sem horas) para comparar
-        df_hoje = df_vendas[df_vendas['Data'].dt.date == hoje]
+        # 2. FILTRAGEM SEGURA
+        # Filtra comparando apenas a parte da data (.dt.normalize() remove as horas do banco)
+        df_hoje = df_vendas[df_vendas['Data'].dt.normalize() == hoje_dt]
         
-        # Filtro Mensal: Compara mês e ano simultaneamente
+        # Filtra o mês comparando mês e ano
         df_mes = df_vendas[
-            (df_vendas['Data'].dt.month == agora.month) & 
-            (df_vendas['Data'].dt.year == agora.year)
+            (df_vendas['Data'].dt.month == mes_atual) & 
+            (df_vendas['Data'].dt.year == ano_atual)
         ]
         
-        # Cálculo das métricas
-        total_hoje = float(df_hoje['Preço'].sum())
-        total_mes = float(df_mes['Preço'].sum())
-        qtd_pedidos = len(df_hoje['Comanda'].unique())
+        # 3. CÁLCULO DAS MÉTRICAS
+        total_hoje = df_hoje['Preço'].sum()
+        total_mes = df_mes['Preço'].sum()
+        qtd_pedidos_hoje = len(df_hoje['Comanda'].unique())
         
         col_m1, col_m2, col_m3 = st.columns(3)
         col_m1.metric("💰 Faturamento Hoje", f"R$ {total_hoje:.2f}")
         col_m2.metric("🗓️ Faturamento Mensal", f"R$ {total_mes:.2f}")
-        col_m3.metric("📦 Pedidos Hoje", qtd_pedidos)
+        col_m3.metric("📦 Pedidos Hoje", qtd_pedidos_hoje)
         
         st.divider()
-        st.subheader("📂 Últimas Comandas")
-        # Mostra as últimas 15 comandas em ordem decrescente
-        if not df_vendas['Comanda'].empty:
-            ids = sorted(df_vendas['Comanda'].dropna().unique(), reverse=True)[:15]
+        st.subheader("📂 Histórico de Comandas (Hoje)")
+        if not df_hoje.empty:
+            ids = sorted(df_hoje['Comanda'].unique(), reverse=True)
             for id_c in ids:
-                detalhe = df_vendas[df_vendas['Comanda'] == id_c]
+                detalhe = df_hoje[df_hoje['Comanda'] == id_c]
                 total_c = detalhe['Preço'].sum()
-                nome_cli = detalhe['Nome'].iloc[0] if not pd.isna(detalhe['Nome'].iloc[0]) else "Avulso"
+                nome_cli = detalhe['Nome'].iloc[0]
                 with st.expander(f"📦 Comanda #{int(id_c)} - {nome_cli} | Total: R$ {total_c:.2f}"):
                     st.table(detalhe[["Item", "Preço"]])
+        else:
+            st.info("Nenhuma venda realizada hoje ainda.")
     else:
-        st.warning("Nenhum dado encontrado na planilha para gerar relatórios.")
+        st.warning("A planilha parece estar vazia.")
 
 with tab_config:
     st.title("⚙️ Ajustes")
@@ -179,7 +193,8 @@ with tab_config:
                 ca.write(row['Item'])
                 cb.write(f"R$ {row['Preço']:.2f}")
                 if cc.button("❌ Remover", key=f"ajuste_{idx}"):
-                    df_real = conn.read(worksheet="Sheet1")
+                    # Lê o dado real para não deletar errado
+                    df_real = conn.read(worksheet="Sheet1", ttl=0)
                     df_up = df_real.drop(idx)
                     conn.update(worksheet="Sheet1", data=df_up)
                     st.cache_data.clear()
