@@ -3,6 +3,7 @@ from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
 import time
+import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Arena Point - Sistema Oficial", layout="wide", page_icon="🍔")
@@ -13,27 +14,40 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 # --- FUNÇÕES DE UTILIDADE ---
 def formatar_moeda(valor):
     """Converte um número float para o formato string R$ 00,00"""
-    return f"R$ {valor:,.2f}".replace('.', 'X').replace(',', '.').replace('X', ',')
+    try:
+        return f"R$ {float(valor):,.2f}".replace('.', 'X').replace(',', '.').replace('X', ',')
+    except:
+        return "R$ 0,00"
 
 @st.cache_data(ttl=2) 
 def get_data():
-    """Lê e limpa os dados da planilha para evitar erros de soma"""
+    """Lê e limpa os dados da planilha garantindo precisão matemática"""
     try:
         df = conn.read(worksheet="Sheet1", ttl=0)
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         
-        # Limpeza de Preço: Remove R$, troca vírgula por ponto e converte para número
+        # --- LIMPEZA DE PREÇO (CORRIGIDA) ---
         if 'Preço' in df.columns:
-            df['Preço'] = df['Preço'].astype(str).str.replace('R$', '', regex=False)
-            df['Preço'] = df['Preço'].str.replace('.', '', regex=False)
-            df['Preço'] = df['Preço'].str.replace(',', '.', regex=False)
+            # 1. Converte para string e remove R$ e espaços
+            df['Preço'] = df['Preço'].astype(str).str.replace('R$', '', regex=False).str.strip()
+            
+            # 2. Se o número tiver ponto E vírgula (ex: 1.200,50), remove o ponto
+            # Se tiver apenas vírgula (ex: 26,00), apenas substitui por ponto
+            def limpar_valor(v):
+                if not v or v == 'nan': return "0.0"
+                # Remove pontos que servem apenas como separador de milhar
+                if '.' in v and ',' in v:
+                    v = v.replace('.', '')
+                # Troca a vírgula decimal por ponto
+                v = v.replace(',', '.')
+                return v
+
+            df['Preço'] = df['Preço'].apply(limpar_valor)
             df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
         
-        # Limpeza de Comanda: Garante que é número inteiro
+        # Limpeza de Comanda e Data
         df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce').fillna(0).astype(int)
-        
-        # Tratamento de Data para filtros de faturamento
         df['Data_DT'] = pd.to_datetime(df['Data'], errors='coerce')
         df['Data_Texto'] = df['Data_DT'].dt.strftime('%Y-%m-%d')
         
@@ -137,7 +151,6 @@ with tab_relatorios:
         df_hoje = df_vendas[df_vendas['Data_Texto'] == hoje_ref]
         df_mes = df_vendas[df_vendas['Data_DT'].dt.month == datetime.now().month]
         
-        # Métricas com formatação R$ 00,00
         c1, c2, c3 = st.columns(3)
         c1.metric("💰 Faturamento Hoje", formatar_moeda(df_hoje['Preço'].sum()))
         c2.metric("🗓️ Faturamento Mensal", formatar_moeda(df_mes['Preço'].sum()))
@@ -175,6 +188,7 @@ with tab_config:
                 ca.write(row['Item'])
                 cb.write(formatar_moeda(row['Preço']))
                 if cc.button("Excluir", key=f"ajuste_{idx}"):
+                    # Lê a planilha original completa para garantir que o drop seja no índice correto
                     df_base = conn.read(worksheet="Sheet1", ttl=0)
                     df_nova = df_base.drop(idx)
                     conn.update(worksheet="Sheet1", data=df_nova)
