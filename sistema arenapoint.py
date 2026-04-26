@@ -30,7 +30,12 @@ tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Relat
 
 with tab_vendas:
     df_vendas_atual = get_data()
-    proxima_comanda = int(pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce').max() or 0) + 1
+    # Pega o próximo número de comanda disponível
+    if not df_vendas_atual.empty:
+        df_vendas_atual['Comanda'] = pd.to_numeric(df_vendas_atual['Comanda'], errors='coerce')
+        proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
+    else:
+        proxima_comanda = 1
 
     st.title("🍔 Arena Point - Caixa")
     col1, col2 = st.columns([1, 1.2])
@@ -82,14 +87,17 @@ with tab_vendas:
                     st.rerun()
             
             st.divider()
+            total_venda = df_c['Preço'].sum()
+            st.write(f"### Total: R$ {total_venda:.2f}")
+            
             if st.button("✅ FINALIZAR E SALVAR", type="primary", use_container_width=True):
-                with st.spinner('Salvando...'):
+                with st.spinner('Salvando no Google Sheets...'):
                     df_online = get_data()
                     df_final = pd.concat([df_online, df_c], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=df_final)
                     st.session_state.carrinho = []
                     st.session_state.nome_cliente = ""
-                    st.success("Salvo!")
+                    st.success("Pedido salvo!")
                     time.sleep(1)
                     st.rerun()
 
@@ -108,52 +116,39 @@ with tab_relatorios:
 with tab_config:
     st.title("⚙️ Ajustes e Configurações")
     
-    # --- FUNCIONALIDADE DE EDITAR COMANDA LANÇADA ---
-    st.subheader("🔍 Editar Comanda já Lançada")
-    busca_comanda = st.number_input("Digite o número da comanda para editar:", min_value=1, step=1)
+    st.subheader("🔍 Gerenciar Comandas Lançadas")
+    busca_comanda = st.number_input("Número da comanda para remover item:", min_value=1, step=1)
     
-    df_edit = get_data()
-    if not df_edit.empty:
-        # Filtra os itens daquela comanda
-        df_edit['Comanda'] = pd.to_numeric(df_edit['Comanda'], errors='coerce')
-        itens_encontrados = df_edit[df_edit['Comanda'] == busca_comanda]
+    df_db = get_data()
+    if not df_db.empty:
+        df_db['Comanda'] = pd.to_numeric(df_db['Comanda'], errors='coerce')
+        # Filtramos o que pertence a essa comanda
+        itens_comanda = df_db[df_db['Comanda'] == busca_comanda]
         
-        if not itens_encontrados.empty:
-            st.info(f"Editando itens da Comanda #{busca_comanda}")
-            
-            # Opção 1: Mudar o número da comanda inteira
-            nova_comanda_num = st.number_input("Mudar toda essa comanda para o número:", min_value=1, value=int(busca_comanda))
-            if nova_comanda_num != busca_comanda:
-                if st.button("Confirmar Mudança de Número"):
-                    df_edit.loc[df_edit['Comanda'] == busca_comanda, 'Comanda'] = nova_comanda_num
-                    conn.update(worksheet="Sheet1", data=df_edit)
-                    st.success(f"Comanda #{busca_comanda} agora é #{nova_comanda_num}!")
-                    time.sleep(1)
-                    st.rerun()
-
-            st.divider()
-            # Opção 2: Excluir itens específicos
-            st.write("Itens individuais (Clique em ❌ para remover da planilha):")
-            for idx, row in itens_encontrados.iterrows():
+        if not itens_comanda.empty:
+            st.write(f"Itens da Comanda #{busca_comanda}:")
+            for idx, row in itens_comanda.iterrows():
                 ca, cb, cc = st.columns([3, 1, 1])
                 ca.write(row['Item'])
                 cb.write(f"R$ {row['Preço']:.2f}")
-                if cc.button("❌", key=f"excluir_{idx}"):
-                    # Remove a linha específica usando o index original
-                    df_final_pos_exclusao = df_edit.drop(idx)
-                    conn.update(worksheet="Sheet1", data=df_final_pos_exclusao)
-                    st.warning("Item removido do sistema!")
-                    time.sleep(1)
-                    st.rerun()
+                # O botão abaixo remove APENAS este item específico da planilha
+                if cc.button("Cancelar Este Item", key=f"cancela_db_{idx}"):
+                    with st.spinner('Removendo item...'):
+                        # Remove a linha pelo índice original do DataFrame carregado
+                        df_atualizado = df_db.drop(idx)
+                        conn.update(worksheet="Sheet1", data=df_atualizado)
+                        st.success("Item removido com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
         else:
-            st.warning("Nenhum item encontrado com esse número de comanda.")
+            st.info("Nenhum item encontrado para esta comanda.")
 
     st.divider()
-    if st.button("🗑️ Resetar Faturamento de Hoje"):
+    if st.button("🗑️ Resetar Hoje"):
         df_now = get_data()
         df_now['Data'] = pd.to_datetime(df_now['Data'])
         df_limpo = df_now[df_now['Data'].dt.date != datetime.now().date()]
         conn.update(worksheet="Sheet1", data=df_limpo)
-        st.success("Hoje foi resetado!")
+        st.success("Faturamento de hoje resetado!")
         time.sleep(1)
         st.rerun()
