@@ -10,31 +10,36 @@ st.set_page_config(page_title="Arena Point - Sistema Estável", layout="wide")
 # Conexão com Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNÇÃO DE LEITURA COM LIMPEZA PROFUNDA ---
+# --- FUNÇÃO DE LEITURA COM LIMPEZA PROFUNDA (VERSÃO BLINDADA) ---
 @st.cache_data(ttl=2) 
 def get_data():
     try:
-        # Lendo dados brutos
+        # Lendo dados brutos sem cache do driver para garantir novos dados
         df = conn.read(worksheet="Sheet1", ttl=0)
         
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         
-        # --- PADRONIZAÇÃO TOTAL ---
-        # 1. Preço: Garante que é número para somar
-        df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
+        # --- LIMPEZA DE PREÇO (O PONTO CRÍTICO) ---
+        # Converte para string primeiro para manipular, remove R$, espaços e ajusta vírgula
+        if 'Preço' in df.columns:
+            df['Preço'] = df['Preço'].astype(str).str.replace('R$', '', regex=False)
+            df['Preço'] = df['Preço'].str.replace('.', '', regex=False) # Remove ponto de milhar
+            df['Preço'] = df['Preço'].str.replace(',', '.', regex=False) # Troca vírgula por ponto
+            df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
         
-        # 2. Comanda: Garante que é número inteiro
+        # --- LIMPEZA DE COMANDA ---
         df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce').fillna(0).astype(int)
         
-        # 3. Data: Converte para datetime e cria uma coluna de texto simples 'Data_Texto' (AAAA-MM-DD)
-        # Isso evita erros de fuso horário na hora de somar o faturamento
+        # --- LIMPEZA DE DATA ---
+        # Converte para datetime garantindo que erros virem NaT
         df['Data_DT'] = pd.to_datetime(df['Data'], errors='coerce')
+        # Cria coluna de texto puro para comparação de faturamento diário
         df['Data_Texto'] = df['Data_DT'].dt.strftime('%Y-%m-%d')
         
         return df
     except Exception as e:
-        st.error(f"❌ ERRO DE CONEXÃO: {e}")
+        st.error(f"❌ ERRO AO PROCESSAR DADOS: {e}")
         return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
 
 # --- INICIALIZAÇÃO DE ESTADOS ---
@@ -48,7 +53,8 @@ tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Relat
 
 with tab_vendas:
     df_vendas_atual = get_data()
-    proxima_comanda = int(df_vendas_atual['Comanda'].max() or 0) + 1
+    # Pega o maior número de comanda para sugerir o próximo
+    proxima_comanda = int(df_vendas_atual['Comanda'].max() if not df_vendas_atual.empty else 0) + 1
 
     st.title("🍔 Arena Point - Caixa")
     col1, col2 = st.columns([1, 1.2])
@@ -110,81 +116,90 @@ with tab_vendas:
             st.write(f"### Total: R$ {total_comanda:.2f}")
 
             if st.button("✅ FINALIZAR E SALVAR", type="primary", use_container_width=True):
-                with st.spinner('Salvando...'):
+                with st.spinner('Gravando na Planilha...'):
+                    # Lê o estado atual da planilha para anexar
                     df_online = conn.read(worksheet="Sheet1", ttl=0)
                     df_final = pd.concat([df_online, df_cart], ignore_index=True)
                     conn.update(worksheet="Sheet1", data=df_final)
                     
+                    # Limpa tudo
                     st.session_state.carrinho = []
                     st.session_state.nome_cliente = ""
                     st.cache_data.clear() 
-                    st.success("Salvo com sucesso!")
+                    st.success("Pedido Finalizado!")
                     time.sleep(1)
                     st.rerun()
         else:
-            st.info("Carrinho vazio.")
+            st.info("O carrinho está vazio.")
 
-# --- ABA DE RELATÓRIOS (SOMA CORRIGIDA POR TEXTO) ---
+# --- ABA DE RELATÓRIOS (CÁLCULOS REVISADOS) ---
 with tab_relatorios:
     st.title("📊 Relatórios Financeiros")
     
-    if st.button("🔄 Atualizar Tudo"):
+    if st.button("🔄 Sincronizar Dados"):
         st.cache_data.clear()
         st.rerun()
 
     df_vendas = get_data()
     
     if not df_vendas.empty:
-        # Pega a data de hoje no formato texto AAAA-MM-DD
-        hoje_texto = datetime.now().strftime('%Y-%m-%d')
-        mes_atual = datetime.now().month
-        ano_atual = datetime.now().year
+        # Pega data de hoje para o filtro
+        hoje_ref = datetime.now().strftime('%Y-%m-%d')
+        mes_ref = datetime.now().month
+        ano_ref = datetime.now().year
         
-        # Filtro de hoje usando a coluna de texto (evita erros de hora)
-        df_hoje = df_vendas[df_vendas['Data_Texto'] == hoje_texto]
+        # FILTROS
+        df_hoje = df_vendas[df_vendas['Data_Texto'] == hoje_ref]
+        df_mes = df_vendas[(df_vendas['Data_DT'].dt.month == mes_ref) & (df_vendas['Data_DT'].dt.year == ano_ref)]
         
-        # Filtro do mês
-        df_mes = df_vendas[
-            (df_vendas['Data_DT'].dt.month == mes_atual) & 
-            (df_vendas['Data_DT'].dt.year == ano_atual)
-        ]
-        
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("💰 Faturamento Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
-        col_m2.metric("🗓️ Faturamento Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
-        col_m3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
+        # EXIBIÇÃO DOS VALORES
+        c1, c2, c3 = st.columns(3)
+        c1.metric("💰 Faturamento Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
+        c2.metric("🗓️ Faturamento Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
+        c3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
         
         st.divider()
-        st.subheader("📂 Todas as Comandas")
+        st.subheader("📂 Histórico Recente de Comandas")
         
-        # Ordena para as mais novas aparecerem primeiro
-        ids = sorted(df_vendas['Comanda'].unique(), reverse=True)
-        for id_c in ids:
-            detalhe = df_vendas[df_vendas['Comanda'] == id_c]
-            if not detalhe.empty:
-                total_c = detalhe['Preço'].sum()
-                nome_cli = detalhe['Nome'].iloc[0]
-                with st.expander(f"📦 Comanda #{int(id_c)} - {nome_cli} | R$ {total_c:.2f}"):
-                    st.table(detalhe[["Item", "Preço"]])
+        # Ordenação decrescente (mais novos primeiro)
+        ids_comandas = sorted(df_vendas['Comanda'].unique(), reverse=True)
+        for id_c in ids_comandas:
+            dados_comanda = df_vendas[df_vendas['Comanda'] == id_c]
+            if not dados_comanda.empty:
+                total_da_comanda = dados_comanda['Preço'].sum()
+                nome_do_cliente = dados_comanda['Nome'].iloc[0]
+                with st.expander(f"Comanda #{int(id_c)} - {nome_do_cliente} | Total: R$ {total_da_comanda:.2f}"):
+                    st.table(dados_comanda[["Item", "Preço"]])
     else:
-        st.warning("Sem dados.")
+        st.warning("Nenhum dado encontrado na planilha.")
 
 with tab_config:
-    st.title("⚙️ Ajustes")
+    st.title("⚙️ Ajustes e Gerenciamento")
     if st.button("🛑 FECHAR TURNO"):
         st.balloons()
+        st.info("Turno sinalizado como encerrado.")
     
     st.divider()
-    busca_c = st.number_input("Número da comanda para excluir item:", min_value=1, step=1)
-    if not df_vendas_atual.empty:
-        itens = df_vendas_atual[df_vendas_atual['Comanda'] == busca_c]
-        for idx, row in itens.iterrows():
-            c1, c2, c3 = st.columns([3, 1, 1])
-            c1.write(row['Item'])
-            c2.write(f"R$ {row['Preço']:.2f}")
-            if c3.button("❌", key=f"exc_{idx}"):
-                df_real = conn.read(worksheet="Sheet1", ttl=0)
-                df_up = df_real.drop(idx)
-                conn.update(worksheet="Sheet1", data=df_up)
-                st.cache_data.clear()
-                st.rerun()
+    st.subheader("🛠️ Excluir Itens Lançados")
+    comanda_ajuste = st.number_input("Digite o número da comanda:", min_value=1, step=1)
+    
+    # Busca dados atuais para exclusão
+    df_ajuste = get_data()
+    if not df_ajuste.empty:
+        itens_ajuste = df_ajuste[df_ajuste['Comanda'] == comanda_ajuste]
+        if not itens_ajuste.empty:
+            for idx, row in itens_ajuste.iterrows():
+                col_a, col_b, col_c = st.columns([3, 1, 1])
+                col_a.write(row['Item'])
+                col_b.write(f"R$ {row['Preço']:.2f}")
+                if col_c.button("Excluir", key=f"del_db_{idx}"):
+                    # Lê a planilha original
+                    df_base = conn.read(worksheet="Sheet1", ttl=0)
+                    # Remove pelo índice exato
+                    df_nova = df_base.drop(idx)
+                    conn.update(worksheet="Sheet1", data=df_nova)
+                    st.cache_data.clear()
+                    st.success("Item removido!")
+                    st.rerun()
+        else:
+            st.write("Nenhum item encontrado para esta comanda.")
