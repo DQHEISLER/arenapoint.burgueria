@@ -5,48 +5,53 @@ from datetime import datetime
 import time
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Arena Point - Sistema Estável", layout="wide")
+st.set_page_config(page_title="Arena Point - Sistema Oficial", layout="wide", page_icon="🍔")
 
 # Conexão com Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- FUNÇÃO DE FORMATAR MOEDA ---
+# --- FUNÇÕES DE UTILIDADE ---
 def formatar_moeda(valor):
-    """Transforma um número (float) em string no formato R$ 00,00"""
+    """Converte um número float para o formato string R$ 00,00"""
     return f"R$ {valor:,.2f}".replace('.', 'X').replace(',', '.').replace('X', ',')
 
-# --- FUNÇÃO DE LEITURA COM LIMPEZA PROFUNDA ---
 @st.cache_data(ttl=2) 
 def get_data():
+    """Lê e limpa os dados da planilha para evitar erros de soma"""
     try:
         df = conn.read(worksheet="Sheet1", ttl=0)
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
         
-        # Limpeza de Preço
+        # Limpeza de Preço: Remove R$, troca vírgula por ponto e converte para número
         if 'Preço' in df.columns:
             df['Preço'] = df['Preço'].astype(str).str.replace('R$', '', regex=False)
             df['Preço'] = df['Preço'].str.replace('.', '', regex=False)
             df['Preço'] = df['Preço'].str.replace(',', '.', regex=False)
             df['Preço'] = pd.to_numeric(df['Preço'], errors='coerce').fillna(0.0)
         
-        # Limpeza de Comanda e Data
+        # Limpeza de Comanda: Garante que é número inteiro
         df['Comanda'] = pd.to_numeric(df['Comanda'], errors='coerce').fillna(0).astype(int)
+        
+        # Tratamento de Data para filtros de faturamento
         df['Data_DT'] = pd.to_datetime(df['Data'], errors='coerce')
         df['Data_Texto'] = df['Data_DT'].dt.strftime('%Y-%m-%d')
         
         return df
     except Exception as e:
-        st.error(f"❌ ERRO AO PROCESSAR DADOS: {e}")
+        st.error(f"❌ ERRO DE LEITURA: {e}")
         return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
 
 # --- INICIALIZAÇÃO DE ESTADOS ---
-if 'carrinho' not in st.session_state: st.session_state.carrinho = []
-if 'nome_cliente' not in st.session_state: st.session_state.nome_cliente = ""
+if 'carrinho' not in st.session_state:
+    st.session_state.carrinho = []
+if 'nome_cliente' not in st.session_state:
+    st.session_state.nome_cliente = ""
 
 # --- INTERFACE POR ABAS ---
 tab_vendas, tab_relatorios, tab_config = st.tabs(["🛒 Nova Venda", "📊 Relatórios", "⚙️ Ajustes e Config"])
 
+# --- ABA 1: VENDAS ---
 with tab_vendas:
     df_vendas_atual = get_data()
     proxima_comanda = int(df_vendas_atual['Comanda'].max() if not df_vendas_atual.empty else 0) + 1
@@ -56,8 +61,10 @@ with tab_vendas:
 
     with col1:
         st.subheader("📝 Dados do Pedido")
-        st.session_state.nome_cliente = st.text_input("Nome do Cliente:", value=st.session_state.nome_cliente)
-        
+        st.session_state.nome_cliente = st.text_input("Nome do Cliente:", value=st.session_state.nome_cliente, placeholder="Ex: Diego")
+
+        st.divider()
+        st.subheader("🍔 Menu")
         cardapio = {
             "HAMBÚRGUER": {"🍔 Simples": 15.0, "🍔 Duplo": 20.0, "🍔 Triplo": 26.0},
             "ESPETOS": {"🍢 Carne": 8.0, "🍢 Frango": 8.0},
@@ -73,11 +80,18 @@ with tab_vendas:
             item_nome = st.selectbox("Produto", list(cardapio[cat].keys()))
             preco = cardapio[cat][item_nome]
         
-        obs = st.text_input("📝 Personalizar (Opcional):")
+        obs = st.text_input("📝 Personalizar (Opcional):", placeholder="Ex: Sem cebola")
         
         if st.button("➕ Adicionar Item", use_container_width=True):
             cliente_final = st.session_state.nome_cliente if st.session_state.nome_cliente else "Cliente Avulso"
-            st.session_state.carrinho.append({"Comanda": proxima_comanda, "Nome": cliente_final, "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "Item": f"{item_nome} ({obs})" if obs else item_nome, "Preço": float(preco)})
+            st.session_state.carrinho.append({
+                "Comanda": proxima_comanda,
+                "Nome": cliente_final,
+                "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "Item": f"{item_nome} ({obs})" if obs else item_nome,
+                "Preço": float(preco)
+            })
+            st.toast(f"Adicionado: {item_nome}")
             st.rerun()
 
     with col2:
@@ -91,45 +105,81 @@ with tab_vendas:
                 if c_b.button("🗑️", key=f"del_{i}"):
                     st.session_state.carrinho.pop(i)
                     st.rerun()
+            
             st.divider()
-            st.write(f"### Total: {formatar_moeda(df_cart['Preço'].sum())}")
-            if st.button("✅ FINALIZAR E SALVAR", type="primary", use_container_width=True):
-                df_online = conn.read(worksheet="Sheet1", ttl=0)
-                conn.update(worksheet="Sheet1", data=pd.concat([df_online, df_cart], ignore_index=True))
-                st.session_state.carrinho = []; st.session_state.nome_cliente = ""; st.cache_data.clear(); st.rerun()
+            total_cart = df_cart["Preço"].sum()
+            st.write(f"### Total: {formatar_moeda(total_cart)}")
 
+            if st.button("✅ FINALIZAR E SALVAR", type="primary", use_container_width=True):
+                with st.spinner('Salvando...'):
+                    df_online = conn.read(worksheet="Sheet1", ttl=0)
+                    df_final = pd.concat([df_online, df_cart], ignore_index=True)
+                    conn.update(worksheet="Sheet1", data=df_final)
+                    st.session_state.carrinho = []
+                    st.session_state.nome_cliente = ""
+                    st.cache_data.clear()
+                    st.success("Pedido Salvo!")
+                    time.sleep(1)
+                    st.rerun()
+        else:
+            st.info("O carrinho está vazio.")
+
+# --- ABA 2: RELATÓRIOS ---
 with tab_relatorios:
     st.title("📊 Relatórios Financeiros")
-    if st.button("🔄 Sincronizar"): st.cache_data.clear(); st.rerun()
-    
+    if st.button("🔄 Sincronizar Dados"):
+        st.cache_data.clear()
+        st.rerun()
+
     df_vendas = get_data()
     if not df_vendas.empty:
         hoje_ref = datetime.now().strftime('%Y-%m-%d')
         df_hoje = df_vendas[df_vendas['Data_Texto'] == hoje_ref]
-        df_mes = df_vendas[(df_vendas['Data_DT'].dt.month == datetime.now().month)]
+        df_mes = df_vendas[df_vendas['Data_DT'].dt.month == datetime.now().month]
         
+        # Métricas com formatação R$ 00,00
         c1, c2, c3 = st.columns(3)
         c1.metric("💰 Faturamento Hoje", formatar_moeda(df_hoje['Preço'].sum()))
         c2.metric("🗓️ Faturamento Mensal", formatar_moeda(df_mes['Preço'].sum()))
         c3.metric("📦 Pedidos Hoje", len(df_hoje['Comanda'].unique()))
         
+        st.divider()
         st.subheader("📂 Histórico de Comandas")
-        for id_c in sorted(df_vendas['Comanda'].unique(), reverse=True):
-            detalhe = df_vendas[df_vendas['Comanda'] == id_c]
-            total_c = detalhe['Preço'].sum()
-            with st.expander(f"Comanda #{int(id_c)} - {detalhe['Nome'].iloc[0]} | Total: {formatar_moeda(total_c)}"):
-                df_exibir = detalhe[["Item", "Preço"]].copy()
-                df_exibir["Preço"] = df_exibir["Preço"].apply(formatar_moeda)
-                st.table(df_exibir)
+        ids = sorted(df_vendas['Comanda'].unique(), reverse=True)
+        for id_c in ids:
+            dados = df_vendas[df_vendas['Comanda'] == id_c]
+            total_c = dados['Preço'].sum()
+            with st.expander(f"Comanda #{int(id_c)} - {dados['Nome'].iloc[0]} | Total: {formatar_moeda(total_c)}"):
+                df_tab = dados[["Item", "Preço"]].copy()
+                df_tab["Preço"] = df_tab["Preço"].apply(formatar_moeda)
+                st.table(df_tab)
+    else:
+        st.warning("Nenhum dado encontrado.")
 
+# --- ABA 3: CONFIGURAÇÕES E AJUSTES ---
 with tab_config:
-    st.title("⚙️ Ajustes")
-    comanda_ajuste = st.number_input("Excluir item da comanda:", min_value=1, step=1)
+    st.title("⚙️ Ajustes e Gerenciamento")
+    if st.button("🛑 FECHAR TURNO"):
+        st.balloons()
+        st.info("Turno encerrado.")
+    
+    st.divider()
+    st.subheader("🛠️ Cancelar Itens Lançados")
+    busca_c = st.number_input("Número da comanda para editar:", min_value=1, step=1)
     df_ajuste = get_data()
-    itens_ajuste = df_ajuste[df_ajuste['Comanda'] == comanda_ajuste]
-    for idx, row in itens_ajuste.iterrows():
-        c1, c2, c3 = st.columns([3, 1, 1])
-        c1.write(row['Item']); c2.write(formatar_moeda(row['Preço']))
-        if c3.button("❌", key=f"exc_{idx}"):
-            conn.update(worksheet="Sheet1", data=conn.read(worksheet="Sheet1", ttl=0).drop(idx))
-            st.cache_data.clear(); st.rerun()
+    if not df_ajuste.empty:
+        itens = df_ajuste[df_ajuste['Comanda'] == busca_c]
+        if not itens.empty:
+            for idx, row in itens.iterrows():
+                ca, cb, cc = st.columns([3, 1, 1])
+                ca.write(row['Item'])
+                cb.write(formatar_moeda(row['Preço']))
+                if cc.button("Excluir", key=f"ajuste_{idx}"):
+                    df_base = conn.read(worksheet="Sheet1", ttl=0)
+                    df_nova = df_base.drop(idx)
+                    conn.update(worksheet="Sheet1", data=df_nova)
+                    st.cache_data.clear()
+                    st.success("Removido!")
+                    st.rerun()
+        else:
+            st.write("Comanda não encontrada.")
