@@ -15,7 +15,7 @@ def get_data():
         df = conn.read(worksheet="Sheet1", ttl=0)
         if df is None or (isinstance(df, pd.DataFrame) and df.empty and len(df.columns) < 2):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
-        # Garantir que a coluna Data seja datetime
+        # Força a conversão e transforma erros/vazios em NaT
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
         return df
     except Exception as e:
@@ -62,7 +62,7 @@ with tab_vendas:
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
                 "Nome": nome_cliente if nome_cliente else "Avulso",
-                "Data": datetime.now(),
+                "Data": datetime.now(), # Aqui já manda como datetime
                 "Item": f"{item_nome} ({obs})" if obs else item_nome,
                 "Preço": preco
             })
@@ -96,23 +96,20 @@ with tab_vendas:
         else:
             st.info("Carrinho vazio.")
 
-# --- ABA DE RELATÓRIOS (NOVA LÓGICA) ---
+# --- ABA DE RELATÓRIOS ---
 with tab_relatorios:
     st.title("📊 Gestão Financeira")
     df_rel = get_data()
     
     if not df_rel.empty:
-        # Cálculos de tempo
         agora = datetime.now()
         hoje = agora.date()
         mes_atual = agora.month
         ano_atual = agora.year
         
-        # Filtros
         df_hoje = df_rel[df_rel['Data'].dt.date == hoje]
         df_mes = df_rel[(df_rel['Data'].dt.month == mes_atual) & (df_rel['Data'].dt.year == ano_atual)]
         
-        # Dashboard Principal
         m1, m2, m3 = st.columns(3)
         m1.metric("💰 Faturamento Hoje", f"R$ {df_hoje['Preço'].sum():.2f}")
         m2.metric("🗓️ Faturamento Mensal", f"R$ {df_mes['Preço'].sum():.2f}")
@@ -120,20 +117,29 @@ with tab_relatorios:
         
         st.divider()
         
-        # BOTÃO DE FECHAR TURNO
         st.subheader("🏁 Finalizar Expediente")
         st.write("Ao encerrar o turno, o faturamento diário será pausado para conferência.")
         if st.button("🛑 FECHAR TURNO AGORA", type="secondary"):
             st.warning("Turno encerrado! (Os dados continuam salvos no histórico mensal).")
-            # Aqui você poderia adicionar uma lógica de enviar o resumo por e-mail ou salvar um log de fechamento.
             st.balloons()
 
         st.divider()
         st.subheader("📂 Histórico Recente")
-        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:10] # Últimas 10
+        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:10] 
         for id_c in ids:
             det = df_rel[df_rel['Comanda'] == id_c]
-            with st.expander(f"Comanda #{int(id_c)} - {det['Nome'].iloc[0]} ({det['Data'].iloc[0].strftime('%H:%M')})"):
+            
+            # --- PROTEÇÃO CONTRA O ERRO 'NAT' ---
+            data_val = det['Data'].iloc[0]
+            if pd.isna(data_val):
+                hora_str = "--:--"
+            else:
+                hora_str = data_val.strftime('%H:%M')
+                
+            nome_cli = det['Nome'].iloc[0] if not pd.isna(det['Nome'].iloc[0]) else "Avulso"
+            # ------------------------------------
+            
+            with st.expander(f"Comanda #{int(id_c)} - {nome_cli} ({hora_str})"):
                 st.table(det[["Item", "Preço"]])
 
 # --- ABA DE AJUSTES ---
