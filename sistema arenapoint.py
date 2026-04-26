@@ -15,7 +15,7 @@ def get_data():
         df = conn.read(worksheet="Sheet1", ttl=0)
         if df is None or (isinstance(df, pd.DataFrame) and df.empty and len(df.columns) < 2):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço"])
-        # Força a conversão e transforma erros/vazios em NaT
+        
         df['Data'] = pd.to_datetime(df['Data'], errors='coerce')
         return df
     except Exception as e:
@@ -62,7 +62,7 @@ with tab_vendas:
             st.session_state.carrinho.append({
                 "Comanda": proxima_comanda,
                 "Nome": nome_cliente if nome_cliente else "Avulso",
-                "Data": datetime.now(), # Aqui já manda como datetime
+                "Data": datetime.now(),
                 "Item": f"{item_nome} ({obs})" if obs else item_nome,
                 "Preço": preco
             })
@@ -118,29 +118,24 @@ with tab_relatorios:
         st.divider()
         
         st.subheader("🏁 Finalizar Expediente")
-        st.write("Ao encerrar o turno, o faturamento diário será pausado para conferência.")
         if st.button("🛑 FECHAR TURNO AGORA", type="secondary"):
-            st.warning("Turno encerrado! (Os dados continuam salvos no histórico mensal).")
+            st.warning("Turno encerrado para conferência.")
             st.balloons()
 
         st.divider()
-        st.subheader("📂 Histórico Recente")
-        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:10] 
+        st.subheader("📂 Histórico de Comandas")
+        
+        # Filtra e exibe as últimas 15 comandas lançadas
+        ids = sorted(df_rel['Comanda'].unique(), reverse=True)[:15] 
         for id_c in ids:
             det = df_rel[df_rel['Comanda'] == id_c]
-            
-            # --- PROTEÇÃO CONTRA O ERRO 'NAT' ---
-            data_val = det['Data'].iloc[0]
-            if pd.isna(data_val):
-                hora_str = "--:--"
-            else:
-                hora_str = data_val.strftime('%H:%M')
-                
+            total_comanda = det['Preço'].sum()
             nome_cli = det['Nome'].iloc[0] if not pd.isna(det['Nome'].iloc[0]) else "Avulso"
-            # ------------------------------------
             
-            with st.expander(f"Comanda #{int(id_c)} - {nome_cli} ({hora_str})"):
+            # Título da comanda agora exibe o Total diretamente
+            with st.expander(f"📦 Comanda #{int(id_c)} - {nome_cli} | Total: R$ {total_comanda:.2f}"):
                 st.table(det[["Item", "Preço"]])
+                st.write(f"**Total da Comanda: R$ {total_comanda:.2f}**")
 
 # --- ABA DE AJUSTES ---
 with tab_config:
