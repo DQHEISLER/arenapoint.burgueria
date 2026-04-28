@@ -75,7 +75,6 @@ with tab_vendas:
         st.divider()
         st.subheader("🍔 Menu Inteligente")
         
-        # Definição do Cardápio Base
         cardapio_base = {
             "HAMBÚRGUER": {"🍔 Simples": 15.0, "🍔 Duplo": 20.0, "🍔 Triplo": 26.0},
             "ESPETOS": {"🍢 Simples": 12.0, "🍢 Completo": 20.0, "🍢 Apenas Espeto": 8.0},
@@ -90,29 +89,18 @@ with tab_vendas:
             "OUTROS": {"🎱 Sinuca/Valor Manual": 0.0}
         }
         
-        adicionais_opcoes = {
-            "Nenhum": 0.0,
-            "➕ Mussarela": 2.0,
-            "➕ Bacon": 6.0,
-            "➕ Carne Extra": 5.0
-        }
+        adicionais_opcoes = {"➕ Mussarela": 2.0, "➕ Bacon": 6.0, "➕ Carne Extra": 5.0}
 
         cat = st.radio("Categoria", list(cardapio_base.keys()))
         
         item_final_nome = ""
         preco_final = 0.0
-        detalhes = []
 
         if cat == "HAMBÚRGUER":
             hamb = st.selectbox("Escolha o Hambúrguer", list(cardapio_base[cat].keys()))
-            st.write("---")
-            st.write("✨ **Adicionais para este Hambúrguer:**")
-            escolha_adicional = st.multiselect("Selecione os Adicionais:", list(adicionais_opcoes.keys())[1:])
-            
+            escolha_adicional = st.multiselect("Selecione os Adicionais:", list(adicionais_opcoes.keys()))
             valor_adicionais = sum([adicionais_opcoes[x] for x in escolha_adicional])
             preco_final = cardapio_base[cat][hamb] + valor_adicionais
-            
-            # Monta o nome do item com os sub-produtos
             sub_texto = f" + {', '.join(escolha_adicional)}" if escolha_adicional else ""
             item_final_nome = f"{hamb}{sub_texto}"
 
@@ -130,18 +118,15 @@ with tab_vendas:
             item_final_nome = st.selectbox("Produto", list(cardapio_base[cat].keys()))
             preco_final = cardapio_base[cat][item_final_nome]
 
-        obs = st.text_input("📝 Observações (Opcional):", placeholder="Ex: Sem cebola, bem passado")
+        obs = st.text_input("📝 Observações (Opcional):", placeholder="Ex: Sem cebola")
         
         if st.button("➕ Adicionar ao Pedido", use_container_width=True):
             cliente_final = st.session_state.nome_cliente if st.session_state.nome_cliente else "Cliente Avulso"
             nome_completo = f"{item_final_nome} | Obs: {obs}" if obs else item_final_nome
-            
             st.session_state.carrinho.append({
-                "Comanda": proxima_comanda, 
-                "Nome": cliente_final, 
+                "Comanda": proxima_comanda, "Nome": cliente_final, 
                 "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), 
-                "Item": nome_completo, 
-                "Preço": float(preco_final)
+                "Item": nome_completo, "Preço": float(preco_final)
             })
             st.toast(f"Adicionado: {item_final_nome}")
             st.rerun()
@@ -180,18 +165,15 @@ with tab_relatorios:
     if st.button("🔄 Sincronizar Dados"):
         st.cache_data.clear()
         st.rerun()
-        
     df_vendas = get_data()
     if not df_vendas.empty:
         hoje_ref = datetime.now().strftime('%Y-%m-%d')
         df_hoje = df_vendas[df_vendas['Data_Texto'] == hoje_ref]
         df_mes = df_vendas[df_vendas['Data_DT'].dt.month == datetime.now().month]
-        
         c1, c2, c3 = st.columns(3)
         c1.metric("💰 Hoje", formatar_moeda(df_hoje['Preço'].sum()))
         c2.metric("🗓️ Mensal", formatar_moeda(df_mes['Preço'].sum()))
         c3.metric("📦 Pedidos", len(df_hoje['Comanda'].unique()))
-        
         st.divider()
         st.subheader("📂 Histórico")
         ids = sorted(df_vendas['Comanda'].unique(), reverse=True)
@@ -203,24 +185,50 @@ with tab_relatorios:
                 df_tab["Preço"] = df_tab["Preço"].apply(formatar_moeda)
                 st.table(df_tab)
 
-# --- ABA 3: CONFIGURAÇÕES ---
+# --- ABA 3: AJUSTES (MODIFICADA PARA EDIÇÃO COMPLETA) ---
 with tab_config:
-    st.title("⚙️ Ajustes")
-    num_comanda = st.number_input("Buscar Comanda:", min_value=1, step=1)
+    st.title("⚙️ Gerenciamento de Comandas Lançadas")
+    num_comanda = st.number_input("Buscar Comanda para Editar:", min_value=1, step=1)
+    
     df_db = get_data()
     if not df_db.empty:
         itens_comanda = df_db[df_db['Comanda'] == num_comanda]
+        
         if not itens_comanda.empty:
+            st.warning(f"Editando Comanda #{num_comanda}")
+            
+            # Loop para editar cada item daquela comanda
             for idx, row in itens_comanda.iterrows():
                 with st.container():
-                    col_item, col_preco, col_btn = st.columns([3, 1.5, 1])
-                    novo_item = col_item.text_input("Item:", value=row['Item'], key=f"ed_it_{idx}")
-                    novo_p = col_preco.number_input("R$:", value=float(row['Preço']), key=f"ed_pr_{idx}")
-                    if col_btn.button("💾", key=f"sv_{idx}"):
-                        df_base = conn.read(worksheet="Sheet1", ttl=0)
-                        df_base.at[idx, 'Item'] = novo_item
-                        df_base.at[idx, 'Preço'] = novo_p
-                        conn.update(worksheet="Sheet1", data=df_base)
+                    col_nome, col_item, col_preco, col_botoes = st.columns([1.5, 2.5, 1, 1])
+                    
+                    # Campos de Edição
+                    novo_nome_c = col_nome.text_input("Cliente", value=row['Nome'], key=f"nome_{idx}")
+                    novo_item_c = col_item.text_input("Item", value=row['Item'], key=f"item_{idx}")
+                    novo_preco_c = col_preco.number_input("R$", value=float(row['Preço']), key=f"preco_{idx}")
+                    
+                    # Botões de Ação
+                    c_save, c_del = col_botoes.columns(2)
+                    
+                    if c_save.button("💾", key=f"save_{idx}", help="Salvar Alterações"):
+                        df_original = conn.read(worksheet="Sheet1", ttl=0)
+                        df_original.at[idx, 'Nome'] = novo_nome_c
+                        df_original.at[idx, 'Item'] = novo_item_c
+                        df_original.at[idx, 'Preço'] = novo_preco_c
+                        conn.update(worksheet="Sheet1", data=df_original)
                         st.cache_data.clear()
-                        st.success("Salvo!")
+                        st.success("Alterado!")
+                        time.sleep(0.5)
                         st.rerun()
+                        
+                    if c_del.button("🗑️", key=f"delete_{idx}", help="Excluir este item definitivamente"):
+                        df_original = conn.read(worksheet="Sheet1", ttl=0)
+                        df_nova = df_original.drop(idx)
+                        conn.update(worksheet="Sheet1", data=df_nova)
+                        st.cache_data.clear()
+                        st.error("Item Removido!")
+                        time.sleep(0.5)
+                        st.rerun()
+                st.divider()
+        else:
+            st.info("Nenhuma comanda encontrada com esse número.")
