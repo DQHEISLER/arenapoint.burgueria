@@ -10,7 +10,7 @@ st.set_page_config(page_title="Arena Point - Sistema Oficial", layout="wide", pa
 # Conexão com Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- CONFIGURAÇÃO DO CARDÁPIO ---
+# --- CONFIGURAÇÃO DO CARDÁPIO (CENTRALIZADO) ---
 cardapio_base = {
     "HAMBÚRGUER": {"🍔 Simples": 15.0, "🍔 Duplo": 20.0, "🍔 Triplo": 26.0},
     "ESPETOS": {"🍢 Simples": 12.0, "🍢 Completo": 20.0, "🍢 Apenas Espeto": 8.0},
@@ -84,7 +84,7 @@ with tab_vendas:
 
         if cat == "HAMBÚRGUER":
             hamb = st.selectbox("Escolha o Hambúrguer", list(cardapio_base[cat].keys()))
-            escolha_adicional = st.multiselect("Adicionais:", list(adicionais_opcoes.keys()))
+            escolha_adicional = st.multiselect("Adicionais para este Hambúrguer:", list(adicionais_opcoes.keys()))
             preco_final = cardapio_base[cat][hamb] + sum([adicionais_opcoes[x] for x in escolha_adicional])
             item_final_nome = f"{hamb}{' + ' + ', '.join(escolha_adicional) if escolha_adicional else ''}"
         elif cat == "ESPETOS":
@@ -108,6 +108,7 @@ with tab_vendas:
                 "Item": f"{item_final_nome} | Obs: {obs}" if obs else item_final_nome, 
                 "Preço": float(preco_final)
             })
+            st.toast(f"Adicionado: {item_final_nome}")
             st.rerun()
 
     with col2:
@@ -146,9 +147,9 @@ with tab_relatorios:
             with st.expander(f"Comanda #{int(id_c)} - {dados['Nome'].iloc[0]} | Total: {formatar_moeda(dados['Preço'].sum())}"):
                 st.table(dados[["Item", "Preço"]])
 
-# --- ABA 3: AJUSTES (CORRIGIDA) ---
+# --- ABA 3: AJUSTES E ADIÇÃO EM COMANDA EXISTENTE ---
 with tab_config:
-    st.title("⚙️ Gerenciamento de Comandas")
+    st.title("⚙️ Gerenciamento de Comandas Lançadas")
     num_comanda = st.number_input("Buscar Comanda para Editar/Adicionar:", min_value=1, step=1)
     df_db = get_data()
     
@@ -157,30 +158,30 @@ with tab_config:
         if not itens_comanda.empty:
             nome_cliente_atual = itens_comanda['Nome'].iloc[0]
             
-            # --- SEÇÃO ADICIONAR (FORA DO LOOP DE EDIÇÃO PARA EVITAR ERRO DE KEY) ---
-            with st.expander("➕ ADICIONAR NOVO ITEM NESTA COMANDA"):
+            # PARTE NOVA: ADICIONAR ITEM NA COMANDA JÁ LANÇADA
+            with st.expander("➕ ADICIONAR NOVO ITEM NESTA COMANDA", expanded=False):
                 col_add1, col_add2 = st.columns(2)
                 with col_add1:
-                    cat_add = st.radio("Categoria", list(cardapio_base.keys()), key="cat_add_ajuste")
+                    cat_add = st.radio("Categoria", list(cardapio_base.keys()), key="cat_add")
                 with col_add2:
                     if cat_add == "HAMBÚRGUER":
-                        h_add = st.selectbox("Hambúrguer", list(cardapio_base[cat_add].keys()), key="h_add_ajuste")
-                        a_add = st.multiselect("Adicionais", list(adicionais_opcoes.keys()), key="a_add_ajuste")
+                        h_add = st.selectbox("Hambúrguer", list(cardapio_base[cat_add].keys()), key="h_add")
+                        a_add = st.multiselect("Adicionais", list(adicionais_opcoes.keys()), key="a_add")
                         p_final_add = cardapio_base[cat_add][h_add] + sum([adicionais_opcoes[x] for x in a_add])
                         n_final_add = f"{h_add}{' + ' + ', '.join(a_add) if a_add else ''}"
                     elif cat_add == "ESPETOS":
-                        e_add = st.selectbox("Prato", list(cardapio_base[cat_add].keys()), key="e_add_ajuste")
-                        s_add = st.radio("Sabor:", ["Carne", "Frango"], horizontal=True, key="s_add_ajuste")
+                        e_add = st.selectbox("Prato", list(cardapio_base[cat_add].keys()), key="e_add")
+                        s_add = st.radio("Sabor:", ["Carne", "Frango"], horizontal=True, key="s_add")
                         p_final_add = cardapio_base[cat_add][e_add]
                         n_final_add = f"{e_add} ({s_add})"
                     elif cat_add == "OUTROS":
                         n_final_add = "🎱 Sinuca/Valor Manual"
-                        p_final_add = st.number_input("Valor (R$):", min_value=0.0, step=1.0, key="val_manual_add_ajuste")
+                        p_final_add = st.number_input("Valor (R$):", min_value=0.0, step=1.0, key="val_manual_add")
                     else:
-                        n_final_add = st.selectbox("Produto", list(cardapio_base[cat_add].keys()), key="p_add_ajuste")
+                        n_final_add = st.selectbox("Produto", list(cardapio_base[cat_add].keys()), key="p_add")
                         p_final_add = cardapio_base[cat_add][n_final_add]
                     
-                    obs_add = st.text_input("Observações:", key="obs_add_ajuste")
+                    obs_add = st.text_input("Observações:", key="obs_add")
                     if st.button("💾 INSERIR NA COMANDA", type="primary", use_container_width=True):
                         novo_reg = pd.DataFrame([{
                             "Comanda": num_comanda, "Nome": nome_cliente_atual,
@@ -190,3 +191,25 @@ with tab_config:
                         }])
                         df_full = conn.read(worksheet="Sheet1", ttl=0)
                         conn.update(worksheet="Sheet1", data=pd.concat([df_full, novo_reg], ignore_index=True))
+                        st.cache_data.clear(); st.success("Item Adicionado!"); time.sleep(1); st.rerun()
+
+            st.divider()
+            st.subheader(f"📝 Itens Atuais da Comanda #{num_comanda}")
+            for idx, row in itens_comanda.iterrows():
+                with st.container():
+                    c_n, c_i, c_p, c_b = st.columns([1.5, 2.5, 1, 1])
+                    n_n = c_n.text_input("Cliente", value=row['Nome'], key=f"n_{idx}")
+                    n_i = c_i.text_input("Item", value=row['Item'], key=f"i_{idx}")
+                    n_p = c_p.number_input("R$", value=float(row['Preço']), key=f"p_{idx}")
+                    
+                    btn_save, btn_del = c_b.columns(2)
+                    if btn_save.button("💾", key=f"s_{idx}"):
+                        df_orig = conn.read(worksheet="Sheet1", ttl=0)
+                        df_orig.at[idx, ['Nome', 'Item', 'Preço']] = [n_n, n_i, n_p]
+                        conn.update(worksheet="Sheet1", data=df_orig)
+                        st.cache_data.clear(); st.success("Salvo!"); time.sleep(0.5); st.rerun()
+                    if btn_del.button("🗑️", key=f"d_{idx}"):
+                        df_orig = conn.read(worksheet="Sheet1", ttl=0)
+                        conn.update(worksheet="Sheet1", data=df_orig.drop(idx))
+                        st.cache_data.clear(); st.error("Removido!"); time.sleep(0.5); st.rerun()
+        else: st.info("Comanda não encontrada.")
