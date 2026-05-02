@@ -40,7 +40,6 @@ def get_data():
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             return pd.DataFrame(columns=["Comanda", "Nome", "Data", "Item", "Preço", "Status", "Pagamento"])
         
-        # Garantir colunas novas
         for col in ["Status", "Pagamento"]:
             if col not in df.columns:
                 df[col] = "Pendente"
@@ -120,99 +119,137 @@ with tab_vendas:
         if st.session_state.carrinho:
             df_cart = pd.DataFrame(st.session_state.carrinho)
             total_pedido = df_cart['Preço'].sum()
-            
             for i, row in df_cart.iterrows():
                 st.write(f"**{row['Item']}** - {formatar_moeda(row['Preço'])}")
-            
             st.divider()
             st.write(f"### Total: {formatar_moeda(total_pedido)}")
-            
             forma_pag = st.selectbox("💳 Forma de Pagamento:", ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito"])
-            
             if st.button("✅ FINALIZAR E SALVAR", type="primary", use_container_width=True):
-                df_cart['Pagamento'] = forma_pag # Atribui a forma escolhida
+                df_cart['Pagamento'] = forma_pag
                 df_online = conn.read(worksheet="Sheet1", ttl=0)
                 conn.update(worksheet="Sheet1", data=pd.concat([df_online, df_cart], ignore_index=True))
                 st.session_state.carrinho, st.session_state.nome_cliente = [], ""
                 st.cache_data.clear(); st.success("Pedido Gravado!"); time.sleep(1); st.rerun()
-            
             if st.button("🗑️ Esvaziar Carrinho"):
                 st.session_state.carrinho = []; st.rerun()
         else: st.info("Carrinho vazio.")
 
-# --- ABA 2: RELATÓRIOS E COZINHA (COM CORES) ---
+# --- ABA 2: RELATÓRIOS E COZINHA ---
 with tab_relatorios:
     st.title("📊 Gestão de Pedidos e Cores")
     df_vendas = get_data()
-    
     if not df_vendas.empty:
-        # Filtros de visualização
         ids = sorted(df_vendas['Comanda'].unique(), reverse=True)
-        
         for id_c in ids:
             dados = df_vendas[df_vendas['Comanda'] == id_c]
             status_atual = dados['Status'].iloc[0]
             pag_atual = dados['Pagamento'].iloc[0]
             nome_c = dados['Nome'].iloc[0]
-            total_c = dados['Preço'].sum()
-
-            # Lógica de Cores visuais
-            container_color = "white"
-            emoji_status = "🔵"
-            
-            if status_atual == "Prioridade": 
-                st.error(f"🚨 PRIORIDADE - Comanda #{id_c} - {nome_c}")
-            elif status_atual == "Pronto":
-                st.warning(f"🔔 PRONTO/AGUARDANDO - Comanda #{id_c} - {nome_c}")
-            elif status_atual == "Pago":
-                st.success(f"✅ PAGO - Comanda #{id_c} - {nome_c} ({pag_atual})")
-            else:
-                st.info(f"⏳ EM PREPARO - Comanda #{id_c} - {nome_c}")
-
+            if status_atual == "Prioridade": st.error(f"🚨 PRIORIDADE - Comanda #{id_c} - {nome_c}")
+            elif status_atual == "Pronto": st.warning(f"🔔 PRONTO/AGUARDANDO - Comanda #{id_c} - {nome_c}")
+            elif status_atual == "Pago": st.success(f"✅ PAGO - Comanda #{id_c} - {nome_c} ({pag_atual})")
+            else: st.info(f"⏳ EM PREPARO - Comanda #{id_c} - {nome_c}")
             with st.expander(f"Detalhes da Comanda #{id_c}"):
                 st.table(dados[["Item", "Preço", "Pagamento"]])
-                
-                # Botões de mudança de cor/status
                 c1, c2, c3, c4 = st.columns(4)
                 if c1.button("🔴 Prioridade", key=f"pri_{id_c}"):
                     df_full = conn.read(worksheet="Sheet1", ttl=0)
                     df_full.loc[df_full['Comanda'] == id_c, 'Status'] = "Prioridade"
                     conn.update(worksheet="Sheet1", data=df_full); st.cache_data.clear(); st.rerun()
-                
                 if c2.button("🟡 Pronto", key=f"pro_{id_c}"):
                     df_full = conn.read(worksheet="Sheet1", ttl=0)
                     df_full.loc[df_full['Comanda'] == id_c, 'Status'] = "Pronto"
                     conn.update(worksheet="Sheet1", data=df_full); st.cache_data.clear(); st.rerun()
-                
                 if c3.button("🟢 Marcar Pago", key=f"pag_{id_c}"):
                     df_full = conn.read(worksheet="Sheet1", ttl=0)
                     df_full.loc[df_full['Comanda'] == id_c, 'Status'] = "Pago"
                     conn.update(worksheet="Sheet1", data=df_full); st.cache_data.clear(); st.rerun()
-                
                 if c4.button("🔵 Normal", key=f"norm_{id_c}"):
                     df_full = conn.read(worksheet="Sheet1", ttl=0)
                     df_full.loc[df_full['Comanda'] == id_c, 'Status'] = "Pendente"
                     conn.update(worksheet="Sheet1", data=df_full); st.cache_data.clear(); st.rerun()
 
-# --- ABA 3: AJUSTES ---
+# --- ABA 3: AJUSTES (REFORMULADA) ---
 with tab_config:
-    st.title("⚙️ Ajustes de Planilha")
-    num_comanda = st.number_input("Buscar Comanda:", min_value=1, step=1)
+    st.title("⚙️ Gerenciamento de Comandas Lançadas")
+    num_comanda = st.number_input("Buscar Comanda para Editar ou Adicionar Itens:", min_value=1, step=1)
     df_db = get_data()
     
     if not df_db.empty:
         itens_comanda = df_db[df_db['Comanda'] == num_comanda]
         if not itens_comanda.empty:
+            nome_cliente_atual = itens_comanda['Nome'].iloc[0]
+            status_atual_comanda = itens_comanda['Status'].iloc[0]
+            pagamento_atual_comanda = itens_comanda['Pagamento'].iloc[0]
+            
+            st.markdown(f"### Editando: Comanda #{num_comanda} - **{nome_cliente_atual}**")
+            
+            # --- SEÇÃO 1: ADICIONAR NOVOS ITENS (IGUAL À VENDA) ---
+            with st.expander("➕ ADICIONAR NOVO ITEM NESTA COMANDA", expanded=False):
+                col_add1, col_add2 = st.columns([1, 1.2])
+                with col_add1:
+                    cat_add = st.radio("Categoria", list(cardapio_base.keys()), key="cat_config")
+                    
+                    if cat_add == "HAMBÚRGUER":
+                        h_add = st.selectbox("Escolha o Hambúrguer", list(cardapio_base[cat_add].keys()), key="h_config")
+                        a_add = st.multiselect("Adicionais:", list(adicionais_opcoes.keys()), key="a_config")
+                        p_final_add = cardapio_base[cat_add][h_add] + sum([adicionais_opcoes[x] for x in a_add])
+                        n_final_add = f"{h_add}{' + ' + ', '.join(a_add) if a_add else ''}"
+                    elif cat_add == "ESPETOS":
+                        e_add = st.selectbox("Escolha o Prato", list(cardapio_base[cat_add].keys()), key="e_config")
+                        s_add = st.radio("Sabor do Espeto:", ["Carne", "Frango"], horizontal=True, key="s_config")
+                        p_final_add = cardapio_base[cat_add][e_add]
+                        n_final_add = f"{e_add} ({s_add})"
+                    elif cat_add == "OUTROS":
+                        n_final_add = "🎱 Sinuca/Valor Manual"
+                        p_final_add = st.number_input("Valor (R$):", min_value=0.0, step=1.0, key="val_config")
+                    else:
+                        n_final_add = st.selectbox("Produto", list(cardapio_base[cat_add].keys()), key="p_config")
+                        p_final_add = cardapio_base[cat_add][n_final_add]
+                    
+                    obs_add = st.text_input("📝 Personalizar:", key="obs_config")
+                    
+                    if st.button("💾 INSERIR ITEM NA COMANDA", type="primary", use_container_width=True):
+                        novo_reg = pd.DataFrame([{
+                            "Comanda": num_comanda,
+                            "Nome": nome_cliente_atual,
+                            "Data": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "Item": f"{n_final_add} | Obs: {obs_add}" if obs_add else n_final_add,
+                            "Preço": float(p_final_add),
+                            "Status": status_atual_comanda,
+                            "Pagamento": pagamento_atual_comanda
+                        }])
+                        df_full = conn.read(worksheet="Sheet1", ttl=0)
+                        conn.update(worksheet="Sheet1", data=pd.concat([df_full, novo_reg], ignore_index=True))
+                        st.cache_data.clear(); st.success("Item adicionado com sucesso!"); time.sleep(1); st.rerun()
+
+            st.divider()
+            
+            # --- SEÇÃO 2: EDITAR ITENS EXISTENTES ---
+            st.subheader("📝 Itens Atuais (Editar ou Excluir)")
             for idx, row in itens_comanda.iterrows():
-                col_i, col_p, col_pay, col_btn = st.columns([3, 1, 1, 1])
-                novo_item = col_i.text_input("Item", row['Item'], key=f"edit_i_{idx}")
-                novo_preco = col_p.number_input("Preço", float(row['Preço']), key=f"edit_p_{idx}")
-                novo_pag = col_pay.selectbox("Pag", ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito"], index=0, key=f"edit_pay_{idx}")
-                
-                if col_btn.button("💾", key=f"save_{idx}"):
-                    df_orig = conn.read(worksheet="Sheet1", ttl=0)
-                    df_orig.at[idx, 'Item'] = novo_item
-                    df_orig.at[idx, 'Preço'] = novo_preco
-                    df_orig.at[idx, 'Pagamento'] = novo_pag
-                    conn.update(worksheet="Sheet1", data=df_orig)
-                    st.cache_data.clear(); st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+                with st.container():
+                    c_item, c_price, c_pay, c_actions = st.columns([3, 1, 1, 0.8])
+                    
+                    edit_item = c_item.text_input("Descrição do Item", value=row['Item'], key=f"it_{idx}")
+                    edit_price = c_price.number_input("Preço", value=float(row['Preço']), key=f"pr_{idx}")
+                    edit_pay = c_pay.selectbox("Pagamento", ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito"], 
+                                             index=["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito"].index(row['Pagamento']) if row['Pagamento'] in ["Dinheiro", "Pix", "Cartão Débito", "Cartão Crédito"] else 0,
+                                             key=f"pa_{idx}")
+                    
+                    btn_save, btn_del = c_actions.columns(2)
+                    if btn_save.button("💾", key=f"sv_{idx}"):
+                        df_orig = conn.read(worksheet="Sheet1", ttl=0)
+                        df_orig.at[idx, 'Item'] = edit_item
+                        df_orig.at[idx, 'Preço'] = edit_price
+                        df_orig.at[idx, 'Pagamento'] = edit_pay
+                        conn.update(worksheet="Sheet1", data=df_orig)
+                        st.cache_data.clear(); st.success("Atualizado!"); time.sleep(0.5); st.rerun()
+                        
+                    if btn_del.button("🗑️", key=f"dl_{idx}"):
+                        df_orig = conn.read(worksheet="Sheet1", ttl=0)
+                        df_orig = df_orig.drop(idx)
+                        conn.update(worksheet="Sheet1", data=df_orig)
+                        st.cache_data.clear(); st.error("Item excluído!"); time.sleep(0.5); st.rerun()
+        else:
+            st.info("Comanda não encontrada.")
